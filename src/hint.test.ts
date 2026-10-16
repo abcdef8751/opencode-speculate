@@ -5,6 +5,112 @@ import { DECIDE_HINT_MAX_LINES, decideHint } from "./hint.ts"
 
 const hint = decideHint()
 
+/* ------------------------------------------------------------------ *
+ * Escalation-snippet guards
+ *
+ * §1's "Consumption caution": the return shape follows the input shape, so an ARRAY
+ * `questions` argument yields `DecideVerdict[]`. A snippet that passes an array must therefore
+ * reduce the result to one verdict (destructure at the call, or index the bound result) before it
+ * reads `.escalate` — otherwise the branch is silently dead code.
+ * ------------------------------------------------------------------ */
+
+const DECIDE_CALL = /tools\.typesafe\.decide\(/
+const ARRAY_ARGUMENT = /questions:\s*\[/
+const DESTRUCTURED_CALL =
+  /const\s+\[\s*([A-Za-z_$][\w$]*)\s*\]\s*=\s*await\s+tools\.typesafe\.decide\(/
+const PLAIN_CALL = /const\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+tools\.typesafe\.decide\(/
+
+/** The copy-ready escalation snippet, sliced out of the hint — never hardcoded. */
+function escalationSnippet(): string {
+  const lines = hint.split("\n")
+  const start = lines.findIndex((line) => line.startsWith("const seen = ["))
+  expect(start).toBeGreaterThanOrEqual(0)
+  return lines.slice(start).join("\n")
+}
+
+/**
+ * Guard: `true` iff no `decide(` call in `code` passes an ARRAY without extracting a single
+ * verdict from it — destructured on the same statement as the call, or indexed
+ * (`const d = verdicts[0]`) on the line that binds the call's result. The single-object form is
+ * trivially safe (one question ⇒ one verdict) and passes.
+ */
+function extractsSingleVerdict(code: string): boolean {
+  const lines = code.split("\n")
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? ""
+    if (!DECIDE_CALL.test(line) || !ARRAY_ARGUMENT.test(line)) continue
+    if (DESTRUCTURED_CALL.test(line)) continue
+    const boundName = PLAIN_CALL.exec(line)?.[1]
+    const next = lines[i + 1] ?? ""
+    const indexed =
+      boundName !== undefined &&
+      new RegExp(`const\\s+[A-Za-z_$][\\w$]*\\s*=\\s*${boundName}\\[\\s*0\\s*\\]`).test(next)
+    if (!indexed) return false
+  }
+  return true
+}
+
+interface SnippetRun {
+  /** Everything the snippet passed to `console.log` (surfaced to the model as `Logs:`). */
+  logs: string[]
+  decideCalls: number
+  stepRuns: string[]
+}
+
+/** Execute the snippet for real against a fake `tools.typesafe.decide`, fake steps and fake console. */
+async function runEscalationSnippet(code: string): Promise<SnippetRun> {
+  const logs: string[] = []
+  const stepRuns: string[] = []
+  let decideCalls = 0
+  const steps = [
+    {
+      tool: "read",
+      run: async () => {
+        stepRuns.push("read")
+        return "file contents"
+      },
+    },
+    {
+      tool: "shell",
+      run: async () => {
+        stepRuns.push("shell")
+        return "should never run"
+      },
+    },
+  ]
+  const tools = {
+    typesafe: {
+      decide: async () => {
+        decideCalls += 1
+        // an array argument ⇒ an array result (§1)
+        return [
+          {
+            id: "goal-met?",
+            mode: "noul",
+            value: false,
+            confidence: 0.31,
+            escalate: true,
+            reason: "confidence 0.31 < 0.6",
+          },
+        ]
+      },
+    },
+  }
+  const fakeConsole = {
+    log: (value: unknown) => {
+      logs.push(String(value))
+    },
+  }
+  const run = new Function(
+    "steps",
+    "tools",
+    "console",
+    `return (async () => {\n${code}\n})()`,
+  ) as (steps: unknown, tools: unknown, console: unknown) => Promise<void>
+  await run(steps, tools, fakeConsole)
+  return { logs, decideCalls, stepRuns }
+}
+
 describe("decideHint", () => {
   test("names the Code Mode tool path and the search fallback", () => {
     expect(hint).toContain("tools.typesafe.decide")
@@ -64,6 +170,67 @@ describe("decideHint", () => {
     expect(hint).toMatch(/step = \{\s*tool,\s*run\(\)\s*\}/)
     expect(hint).toContain("last: seen.at(-1)")
     expect(hint).toContain("done: seen.map(s => s.tool)")
+  })
+
+  test("the escalation snippet extracts one verdict from the array result", () => {
+    const code = escalationSnippet()
+    const callLine = code.split("\n").find((line) => line.includes("tools.typesafe.decide(")) ?? ""
+
+    // array in ⇒ array out, so the call statement must reduce it to a single verdict
+    expect(callLine).toMatch(ARRAY_ARGUMENT)
+    const destructured = DESTRUCTURED_CALL.exec(callLine)
+    expect(destructured).not.toBeNull()
+    const name = destructured?.[1] ?? ""
+    expect(name).not.toBe("")
+    // …and the branch must read `.escalate`/`.reason` off that very binding
+    expect(code).toMatch(new RegExp(`if\\s*\\(\\s*${name}\\.escalate\\s*\\)`))
+    expect(code).toContain(`${name}.reason`)
+    expect(extractsSingleVerdict(code)).toBe(true)
+  })
+
+  test("states the array-result consumption rule in prose too", () => {
+    expect(hint).toMatch(/destructure or index/i)
+    expect(hint).toContain("before reading `.escalate`")
+  })
+
+  test("running the snippet actually fires the handler and breaks", async () => {
+    const { logs, decideCalls, stepRuns } = await runEscalationSnippet(escalationSnippet())
+    expect(decideCalls).toBe(1) // `break` fired after the low-confidence verdict
+    expect(stepRuns).toEqual(["read"]) // the second step never ran
+    expect(logs).toHaveLength(1)
+    expect(JSON.parse(logs[0] ?? "null")).toEqual({
+      reason: "confidence 0.31 < 0.6",
+      last: { tool: "read", out: "file contents" },
+      done: ["read"],
+    })
+  })
+
+  test("the old shape (array in, no extraction) is dead code the guard rejects", async () => {
+    const broken = escalationSnippet().replace("const [d] = await", "const d = await")
+    // the mutation really applied, and the static guard rejects the result
+    expect(broken).not.toBe(escalationSnippet())
+    expect(broken).toContain("const d = await tools.typesafe.decide(")
+    expect(extractsSingleVerdict(broken)).toBe(false)
+
+    // and it is dead for real: `d` is an array, `d.escalate` is undefined, nothing logs or breaks
+    const { logs, decideCalls, stepRuns } = await runEscalationSnippet(broken)
+    expect(decideCalls).toBe(2)
+    expect(stepRuns).toEqual(["read", "shell"])
+    expect(logs).toEqual([])
+  })
+
+  test("the guard also accepts the index form and the single-object form", () => {
+    const indexed = [
+      'const verdicts = await tools.typesafe.decide({ state, questions: [{ mode: "noul", id: "a" }] })',
+      "const d = verdicts[0]",
+      "if (d.escalate) { break }",
+    ].join("\n")
+    expect(extractsSingleVerdict(indexed)).toBe(true)
+
+    // one question OBJECT ⇒ one verdict: no extraction needed
+    const single =
+      'const d = await tools.typesafe.decide({ state, questions: { mode: "noul", id: "a", criteria: { true: "y", false: "n" } } })'
+    expect(extractsSingleVerdict(single)).toBe(true)
   })
 
   test("covers every verdict field from §1", () => {
