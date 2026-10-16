@@ -313,8 +313,25 @@ load this plugin, rather than silently "passing".
 
 **Definition of done (B):** unit tests with a fake editor covering flip / already / missing /
 control-plane / idempotence / `enabled:false` no-op / `options` merge preserving other keys;
-`probe/live-builtins.ts` typechecks, is documented in `README.md`'s "live probes" section
-(**you own that section only** — see §5) and exits non-zero with a clear message when unloaded.
+`probe/live-builtins.ts` typechecks, is documented in `docs/live-probes.md` (**you own that file**
+— see §5) and exits non-zero with a clear message when unloaded.
+
+**Call-site adapter (required, verified by worker B 2026-10-16).** `ToolEditorLike` is deliberately
+structural, and the host's `ToolEditor` is *not* directly assignable to it (`options` is typed as
+the `Options` interface union, which has no string index signature ⇒ `TS2345`). `src/index.ts`
+must adapt at the boundary — do **not** loosen the contract:
+
+```ts
+await ctx.tool.transform((editor) => {
+  enableBuiltinsForCodeMode({
+    list: () => editor.list(),
+    update: (id, fn) => editor.update(id, (t) => fn(t as { options?: Record<string, unknown> | null })),
+  }, { enabled: config.builtinsCodemode, ids: config.builtinIds })
+})
+```
+
+Ratified refinements: requested ids are de-duplicated (first-seen order); absent requestable ids are
+`skipped: "not-found"`; `enabled:false` must not even call `editor.list()`.
 
 ---
 
