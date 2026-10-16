@@ -26,8 +26,52 @@ Runtime facts verified on this machine (2026-10-16, `opencode v2.0.30`):
   Model `jev-1.13-free` is free. Cloudflare bans unknown User-Agents (1010) — always send a
   normal UA; the SDK's `typesafe-sdk/<ver>` UA works.
 - The SDK posts to `baseURL + "/v1/systemone"` and sends `Authorization: Bearer <apiKey>`.
-  Therefore `baseURL = "https://opencode.ai/inference/systemone"`. Pass `compression: false`
-  (the console endpoint's zstd support is unverified).
+  Therefore `baseURL = "https://opencode.ai/inference/systemone"`.
+
+### ⚠ `@typesafe-ai/sdk` is NOT usable in the plugin path (measured 2026-10-16)
+
+Two independent, reproduced problems — so **`createJevJudge` must not use the SDK**:
+
+1. **Bun + large request states ⇒ `TypeError: Body already used`.** The SDK's `attempt()` runs
+   `bufferResponse()`, which drains `response.clone()` and then hands the *same* response object
+   back for `parseBody()` to `.text()` again. Under Bun (the OpenCode plugin runtime) that breaks
+   once the request state grows past a few KB: `state` of 1.2 KB OK, 13 KB `TypeError`, even with
+   `retry: { maxRetries: 0 }`; the HTTP response itself is 200. The identical script under Node 26
+   succeeds at 13 KB. Reproduce: `node_modules/@typesafe-ai/sdk/dist/index.mjs` lines 821-840
+   (`bufferResponse`), 1039-1043 (`if (res.ok) return res`), 1111 (`parseBody`).
+2. **The console endpoint rejects the SDK's request compression.** With `compression: "zstd"` the
+   same call returns `BadRequestError 400` (empty body). `compression: false` is mandatory here,
+   and the SDK only defaults to uncompressed for bodies < 1 KiB.
+3. Also note: the SDK's default UA is what got past Cloudflare; a custom client must send a normal
+   UA (verified UA: any `<product>/<version>` string, e.g. `opencode-codemode-decide/0.1.0`).
+
+**Required transport: a ~40-line `fetch` client.** Verified working under Bun at every size
+(1 B…44 KB state), with a clean error path. Reference implementation (adapt it; keep the `Judge`
+shape and the injected-`fetch` testability):
+
+```ts
+const res = await fetch(`${baseURL}/v1/systemone`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "User-Agent": "opencode-codemode-decide/0.1.0",   // Cloudflare 1010-bans unknown UAs
+  },
+  body: JSON.stringify({ model: req.model ?? model, state: req.state, questions: req.questions }),
+  signal,                                             // AbortController, timer for timeoutMs
+})
+const text = await res.text()
+if (!res.ok) throw new Error(`Jev request failed: HTTP ${res.status} ${res.statusText} — ${text.slice(0, 300)}`)
+const parsed = JSON.parse(text)
+if (typeof parsed?.answers !== "object" || parsed.answers === null) throw new Error("Jev returned an unusable response")
+return parsed
+```
+
+`@typesafe-ai/sdk` stays in `package.json` only so an **optional** adapter can be added later
+(`createJevJudge({ transport: "sdk" })`) for a Node host; it is not the default and must not be
+exercised in tests. Timeout abort produces an `Error` whose message contains `timeout after Nms`;
+a bad key produces `Jev request failed: HTTP 401 Unauthorized — …`.
 
 ---
 
@@ -137,7 +181,7 @@ export interface Judge {
   systemOne(req: SystemOneRequest, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SystemOneResult>
 }
 
-/** @typesafe-ai/sdk-backed Judge pointed at the OpenCode Console systemone endpoint. */
+/** Jev `Judge`: dependency-free `fetch` client (NOT the SDK — see the finding above). */
 export function createJevJudge(opts: {
   apiKey: string
   baseURL?: string       // default "https://opencode.ai/inference/systemone"
@@ -342,6 +386,32 @@ The shared types file **`harness/types.ts` is owned by the orchestrator and froz
   `harness/pricing.ts`, `harness/sandbox/**` (the Code Mode tool tree + `decide` wiring),
   `harness/README.md`.
 - **D2 owns**: `harness/tasks/**`, `harness/fixtures/**`, `harness/drivers/**`.
+
+Two more frozen entry points (D2 owns the files, D1 imports them):
+
+```ts
+// harness/tasks/index.ts
+export const TASKS: readonly TaskDef[]
+export function getTask(id: string): TaskDef | undefined
+
+// harness/drivers/index.ts
+export function createMockDriver(opts?: {
+  seed?: number
+  /** Optional per-task overrides of the canned Code Mode program. */
+  programs?: Record<string, { A?: string; B?: string; C?: string }>
+  /** Synthetic token accounting model; clearly labelled as such in the report. */
+  usageModel?: "small" | "cached-heavy"
+}): ModelDriver
+export function createOpenCodeCliDriver(opts?: {
+  model?: string
+  agent?: string
+  binary?: string
+}): ModelDriver
+/** Offline Judge: answers keyed by question id; call log inspectable. */
+export function createFakeJudge(script: Record<string, {
+  noul?: number; choice?: string; score?: number; confidence?: number
+}>): import("../../src/decide/index.ts").Judge
+```
 
 The three arms (plan §Measurement harness):
 

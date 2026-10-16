@@ -46,3 +46,17 @@ Jev is reached through the OpenCode Console systemone endpoint
 - `tools.<anything>` is a callable stub: `typeof` lies, only calling reveals absence.
 - The interpreter has no `import`/`process`; `throw`/`try`/`catch` work, and `Error` carries
   `message`. Payloads must be JSON in the message.
+
+## Backend findings (measured 2026-10-16, this machine)
+
+- The OpenCode Console systemone endpoint is a faithful Jev/TypeSafe JSON API: verified live with
+  `noul`/`choice`/`score` in one batch, states from 1 B to 44 KB, HTTP 200, response
+  `{model, answers, usage}`. `jev-1.13-free` costs nothing.
+- **`@typesafe-ai/sdk@0.7.0` cannot be used from the plugin path.** Under Bun it throws
+  `TypeError: Body already used` on larger request states (its `bufferResponse` drains
+  `response.clone()` and then re-reads the same response); the same call works under Node 26. It
+  also sends zstd by default, which this endpoint rejects with `400`. See
+  `docs/CONTRACTS.md` → the `@typesafe-ai/sdk` finding. `decide` therefore uses a small
+  dependency-free `fetch` client.
+- Cloudflare on `opencode.ai` bans unknown User-Agents (`Error 1010`) — always send a normal UA.
+
