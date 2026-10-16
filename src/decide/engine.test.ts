@@ -432,6 +432,37 @@ describe("cache", () => {
     expect(parseCachedVerdict({ nope: true } as unknown as Json)).toBeUndefined()
     expect(parseCachedVerdict(null)).toBeUndefined()
   })
+
+  test("a cached escalation verdict replays escalate/reason with cached: true", async () => {
+    const judge = createJudge(() => answers({ a: { type: "noul", noul: 0.6 } })) // confidence 0.2
+    const d = deps(judge)
+    const call: DecideCall = { state: "s", questions: qa, escalateBelow: 0.5 }
+    const first = (await runDecide(d, call)) as DecideVerdict
+    expect(first.escalate).toBe(true)
+    const second = (await runDecide(d, call)) as DecideVerdict
+    expect(second.cached).toBe(true)
+    expect(second.escalate).toBe(true)
+    expect(second.reason).toBe(first.reason)
+    expect(judge.calls).toHaveLength(1)
+  })
+
+  test("choice questions accept null descriptions and p === 0.5 noul picks true", async () => {
+    const judge = createJudge(() =>
+      answers({
+        a: { type: "noul", noul: 0.5 },
+        c: { type: "choice", choice: "auth", confidence: 1, probabilities: { auth: 1, db: 0 } },
+      }),
+    )
+    const out = (await runDecide(deps(judge), {
+      state: "s",
+      questions: [qa, { mode: "choice", id: "c", options: { auth: null, db: "db" } }],
+      cache: false,
+    })) as DecideVerdict[]
+    expect(out[0]!.value).toBe(true)
+    expect(out[0]!.confidence).toBe(0)
+    expect(out[1]!.value).toBe("auth")
+    expect(out[1]!.confidence).toBe(1)
+  })
 })
 
 /* ------------------------------------------------------------------ *

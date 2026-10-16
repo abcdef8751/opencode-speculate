@@ -80,7 +80,10 @@ export function createDecideRuntime(deps: EngineDeps): {
     input: DECIDE_INPUT_SCHEMA,
     output: DECIDE_OUTPUT_SCHEMA,
     options: { namespace: DECIDE_NAMESPACE, codemode: true, pinned: true },
-    async execute(input: unknown): Promise<{ output: DecideVerdict | DecideVerdict[]; content: string }> {
+    async execute(
+      input: unknown,
+      _context?: unknown,
+    ): Promise<{ output: DecideVerdict | DecideVerdict[]; content: string }> {
       const decideCall = parseDecideInput(input)
       const output = await call(decideCall)
       const content = Array.isArray(output)

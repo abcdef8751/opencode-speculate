@@ -317,10 +317,15 @@ export function verdictFacts(
   question: DecideQuestion,
   answer: SystemOneAnswer | undefined,
 ): VerdictFacts {
+  // A missing/unusable answer is NOT a thrown error (that is reserved for transport/HTTP/parse
+  // failures of the whole request). It yields a conservative value with `confidence: 0` and an
+  // `unusable` cause so `assembleVerdict` can force `escalate: true` with a reason. The value is
+  // never trusted: escalation is the only signal that matters on this path.
   if (question.mode === "noul") {
     const p = answer?.noul
     if (typeof p === "number" && Number.isFinite(p)) {
       return {
+        // Jev returns P(true) only; the boolean decision rule is the natural p >= 0.5.
         value: p >= 0.5,
         p: clamp01(p),
         confidence: normalizeNoulConfidence(p),
@@ -343,6 +348,8 @@ export function verdictFacts(
         confidence:
           probabilities !== undefined
             ? normalizeChoiceConfidence(probabilities, optionCount)
+            // Fallback for backends that omit probabilities (e.g. the harness fakeJudge):
+            // use the API's own confidence rather than reporting 0.
             : normalizeScoreConfidence(answer?.confidence),
       }
       if (probabilities !== undefined) facts.probabilities = probabilities
