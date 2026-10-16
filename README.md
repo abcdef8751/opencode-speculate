@@ -33,8 +33,9 @@ bun run harness --tasks <id> --arms A,B,C --runs 1 --driver mock
 ## Backend
 
 Jev is reached through the OpenCode Console systemone endpoint
-(`https://opencode.ai/inference/systemone/v1/systemone`, model `jev-1.13-free`) via
-`@typesafe-ai/sdk` pointed at that base URL. The key is resolved from `OPENCODE_API_KEY` (env or
+(`https://opencode.ai/inference/systemone/v1/systemone`, model `jev-1.13-free`) via a small,
+dependency-free `fetch` client (`src/decide/jev.ts`). `@typesafe-ai/sdk` is deliberately **not**
+used — see the measured finding below. The key is resolved from `OPENCODE_API_KEY` (env or
 `.env`) — see `.env.example`. Keys are never logged.
 
 ## Key findings that this repo builds on
@@ -42,7 +43,10 @@ Jev is reached through the OpenCode Console systemone endpoint
 - Plugin tools land in Code Mode, not the native tool list — the vendored ensemble plugin hit this
   live (`~/.config/opencode/plugins/opencode-ensemble/src/v2-setup.ts`).
 - Built-ins ship `options: { codemode: false }`, so they are *not* in the sandbox by default;
-  flipping the option is a supported plugin transform and leaves leaf permissions intact.
+  flipping the option is a supported plugin transform. Nested calls execute the captured tool, so
+  its leaf policy *should* still authorize — **assumption, not yet verified: see
+  `docs/live-probes.md`**, which is what settles it (and whether the flip removes the tool from the
+  agent's direct list).
 - `tools.<anything>` is a callable stub: `typeof` lies, only calling reveals absence.
 - The interpreter has no `import`/`process`; `throw`/`try`/`catch` work, and `Error` carries
   `message`. Payloads must be JSON in the message.

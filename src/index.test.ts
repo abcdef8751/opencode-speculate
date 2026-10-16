@@ -185,7 +185,29 @@ describe("plugin setup()", () => {
     expect(result.output[1]!.value).toBe("src/auth.ts")
     expect(result.content).toContain("passed")
 
-    // the execute.after hook turns that call into a durable log entry
+    // the engine's §1 log sink wrote a contract-shaped decision-log entry
+    const logKeys = [...f.store.keys()].filter((k) => k.startsWith("decide/log/"))
+    expect(logKeys).toHaveLength(1)
+    expect(logKeys[0]).toMatch(/^decide\/log\/.+-[0-9a-f]{8}$/) // decide/log/<iso>-<sha8>
+    const entry = f.store.get(logKeys[0]!) as {
+      at: number
+      modelId: string
+      latencyMs: number
+      cached: boolean
+      questionIds: string[]
+      verdicts: { id: string }[]
+      usage: unknown
+    }
+    // §1 shape: { at, modelId, latencyMs, cached, questionIds, verdicts, usage }
+    expect(typeof entry.at).toBe("number") // epoch ms, not an ISO string
+    expect(entry.modelId).toBe("jev-test")
+    expect(typeof entry.latencyMs).toBe("number")
+    expect(entry.cached).toBe(false)
+    expect(entry.questionIds).toEqual(["passed", "culprit"])
+    expect(entry.verdicts.map((v) => v.id)).toEqual(["passed", "culprit"])
+    expect(entry.usage).toEqual({ input_tokens: 10, output_tokens: 5 })
+
+    // the tool hook writes a *separate*, session-scoped audit record under its own prefix
     await f.afterHooks[0]!({
       tool: "decide",
       sessionID: "ses_test",
@@ -194,12 +216,32 @@ describe("plugin setup()", () => {
       status: "completed",
       result: { output: result.output },
     })
-    const logKeys = [...f.store.keys()].filter((k) => k.startsWith("decide/log/"))
-    expect(logKeys).toHaveLength(1)
-    const entry = f.store.get(logKeys[0]!) as { sessionID: string; status: string; verdicts: unknown[] }
-    expect(entry.sessionID).toBe("ses_test")
-    expect(entry.status).toBe("completed")
-    expect(entry.verdicts).toHaveLength(2)
+    const auditKeys = [...f.store.keys()].filter((k) => k.startsWith("decide/audit/"))
+    expect(auditKeys).toHaveLength(1)
+    const audit = f.store.get(auditKeys[0]!) as { sessionID: string; status: string; verdicts: unknown[] }
+    expect(audit.sessionID).toBe("ses_test")
+    expect(audit.status).toBe("completed")
+    expect(audit.verdicts).toHaveLength(2)
+  })
+
+  test("the audit hook accepts a namespaced tool name too", async () => {
+    globalThis.fetch = (async () =>
+      fakeSystemOneResponse({
+        q: { type: "noul", noul: 0.9 },
+      })) as unknown as typeof fetch
+
+    const f = fakeContext()
+    await (plugin as { setup(ctx: unknown): Promise<unknown> }).setup(f.ctx)
+
+    await f.afterHooks[0]!({
+      tool: "typesafe.decide",
+      sessionID: "ses_test",
+      id: "call_ns",
+      input: {},
+      status: "completed",
+      result: { output: [] },
+    })
+    expect([...f.store.keys()].filter((k) => k.startsWith("decide/audit/"))).toHaveLength(1)
   })
 
   test("a Jev failure surfaces as a thrown error, and still logs an error entry", async () => {
@@ -230,7 +272,9 @@ describe("plugin setup()", () => {
       status: "error",
       error: { message: "Jev request failed: HTTP 401 Unauthorized" },
     })
-    const entry = f.store.get([...f.store.keys()].find((k) => k.startsWith("decide/log/"))!) as {
+    const entry = f.store.get(
+      [...f.store.keys()].find((k) => k.startsWith("decide/audit/"))!,
+    ) as {
       status: string
       error: string
     }

@@ -143,9 +143,15 @@ export interface DecideVerdict {
   A hit returns the cached verdict with `cached: true`, `latencyMs: 0`. A question in a batch may
   hit while its siblings miss — but a **batch request is skipped only if every question hits**.
 - **Decision log.** Register one entry per Jev request (not per question) through the injected
-  `log` sink: `{ at, modelId, latencyMs, cached, questionIds, verdicts, usage }`, JSON-safe.
-  The plugin wires this into `ctx.storage` (keys `decide/log/<iso>-<sha8>`); the harness wires it
+  `log` sink: `{ at, modelId, latencyMs, cached, questionIds, verdicts, usage }` (`at` = epoch ms),
+  JSON-safe. The plugin wires this into `ctx.storage` (keys `decide/log/<iso>-<sha8>`); the harness wires it
   into an in-memory array. Logging never throws into the caller path.
+
+  **Ratified split (2026-10-16, reviewer finding 3):** the plugin persists the contract entry via the
+  `log` sink under `decide/log/…`, and *additionally* writes a session-scoped audit record from the
+  `execute.after` tool hook under a **separate** `decide/audit/…` prefix — the hook is the only place
+  a `sessionID` exists. The two record shapes must never share a prefix, and the hook matches either
+  `decide` or `typesafe.decide` as the tool name (the host may report it namespaced).
 
 ### Factories
 

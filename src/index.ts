@@ -11,6 +11,8 @@
  * (`docs/CONTRACTS.md` §1–§3).
  */
 
+import { createHash } from "node:crypto"
+
 import { Plugin } from "@opencode/plugin"
 import {
   createDecideTool,
@@ -24,8 +26,17 @@ import { enableBuiltinsForCodeMode } from "./builtins.ts"
 import { loadConfig } from "./config.ts"
 import { decideHint } from "./hint.ts"
 
-/** Storage key prefix for the durable decision log. */
+/**
+ * Storage keys.
+ *
+ * `decide/log/…`  — the contract §1 decision log: one entry per Jev request, emitted by the
+ *                   engine's `log` sink, keyed `decide/log/<iso>-<sha8>`.
+ * `decide/audit/…` — an *additional* session-scoped audit record written from the tool hook
+ *                   (`execute.after`), which is the only place a `sessionID` is available. It
+ *                   lives under a distinct prefix so the two record shapes can never be confused.
+ */
 const LOG_PREFIX = "decide/log/"
+const AUDIT_PREFIX = "decide/audit/"
 
 /** Structural view of the host's tool editor (see `docs/CONTRACTS.md` §2). */
 interface EditorLike {
@@ -59,6 +70,22 @@ export default Plugin.define({
 
     let flipReport: ReturnType<typeof enableBuiltinsForCodeMode> | undefined
 
+    /**
+     * Contract §1 decision log: the engine emits one entry per Jev request; we persist it
+     * verbatim (that frozen shape is what consumers read) under `decide/log/<iso>-<sha8>`.
+     * A sink must never throw into the caller path, so failures are swallowed to the log.
+     */
+    const writeDecisionLog = async (entry: Json): Promise<void> => {
+      try {
+        const at = typeof (entry as { at?: unknown })?.at === "number" ? (entry as { at: number }).at : Date.now()
+        const iso = new Date(at).toISOString()
+        const digest = createHash("sha256").update(JSON.stringify(entry)).digest("hex").slice(0, 8)
+        await storage.set(`${LOG_PREFIX}${iso}-${digest}`.replace(/[:.]/g, "-"), entry)
+      } catch (error) {
+        console.error(`[decide] decision log write failed: ${String(error)}`)
+      }
+    }
+
     const registration = await ctx.tool.transform((editor) => {
       // --- built-ins into Code Mode (contract §2 call-site adapter) ---
       flipReport = enableBuiltinsForCodeMode(
@@ -76,7 +103,11 @@ export default Plugin.define({
       if (judge !== undefined) {
         editor.namespace({ name: DECIDE_NAMESPACE, description: "TypeSafe/Jev fast structured decisions" })
         editor.add(
-          createDecideTool({ judge, storage }) as unknown as Parameters<typeof editor.add>[0],
+          // Boundary cast: the tool surface is structurally identical; the host's generics are
+          // stricter than the structural mirror in `decide/index.ts` (contract §2 pattern).
+          createDecideTool({ judge, storage, log: writeDecisionLog }) as unknown as Parameters<
+            typeof editor.add
+          >[0],
         )
       }
     })
@@ -103,7 +134,7 @@ export default Plugin.define({
           })
         : undefined
 
-    // --- durable decision log (plan step 1: "decision log via execute.after") ---
+    // --- session-scoped audit record (the tool hook is the only place a sessionID exists) ---
     const logRegistration = await ctx.tool.hook("execute.after", async (raw) => {
       const event = raw as unknown as {
         tool: string
@@ -114,9 +145,10 @@ export default Plugin.define({
         result?: { output?: unknown }
         error?: { message?: unknown }
       }
-      if (event.tool !== DECIDE_TOOL_NAME) return
+      // The host may report a namespaced tool name (`typesafe.decide`) or the bare one.
+      if (event.tool !== DECIDE_TOOL_NAME && !event.tool.endsWith(`.${DECIDE_TOOL_NAME}`)) return
       const at = new Date().toISOString()
-      const key = `${LOG_PREFIX}${at}-${event.id}`.replace(/[:.]/g, "-")
+      const key = `${AUDIT_PREFIX}${at}-${event.id}`.replace(/[:.]/g, "-")
       try {
         await ctx.storage.set(key, {
           at,
@@ -132,7 +164,7 @@ export default Plugin.define({
               : null,
         })
       } catch (error) {
-        console.error(`[decide] decision log write failed: ${String(error)}`)
+        console.error(`[decide] audit record write failed: ${String(error)}`)
       }
     })
 
