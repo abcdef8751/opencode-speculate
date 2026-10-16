@@ -87,8 +87,17 @@ const qc: DecideQuestion = {
   options: { auth: "the auth module", db: "the database layer" },
 }
 
-function deps(judge: Judge, log?: (entry: Json) => void): EngineDeps {
-  return { judge, storage: createStorage(), now: () => 1000, hash: (input) => `h(${input})`, ...(log ? { log } : {}) }
+function deps(
+  judge: Judge,
+  log?: (entry: Json) => void,
+): EngineDeps & { storage: ReturnType<typeof createStorage> } {
+  return {
+    judge,
+    storage: createStorage(),
+    now: () => 1000,
+    hash: (input) => `h(${input})`,
+    ...(log ? { log } : {}),
+  }
 }
 
 /* ------------------------------------------------------------------ *
