@@ -35,8 +35,9 @@ It also checks three things we want to keep honest:
 - A live OpenCode V2 host (`opencode` 2.0.x) on this machine.
 - The record path defaults to `/tmp/opencode/opencode-decide-builtins-probe.json`
   (override with `OPENCODE_DECIDE_PROBE_FILE`).
-- To answer **(3)** you also need the main plugin loaded (the `decide` tool). Load it the same way
-  you load any plugin for a run; if it is absent, section (3) says so instead of guessing.
+- To answer **(4)** you also need the main plugin loaded (the `decide` tool). Load it the same
+  way you load any plugin for a run; if no catalog view the probe read shows it, section (4)
+  reports **UNKNOWN** with the views it checked, instead of guessing.
 
 #### 1. Paste the discovery shim
 
@@ -110,18 +111,21 @@ the raw record.
 | 1 | pre-flip catalog of the six | **Automated** — read inside the host's tool transform before the flip |
 | 2 | post-flip catalog + merge safety | **Automated** — read after the flip, plus `ctx.tool.list()` |
 | 3 | direct-list exclusivity | **Automated capture, human-triggered** request; cross-check the TUI tool list by eye |
-| 4 | effective `decide` path | **Automated** — `tools.typesafe.decide` when namespaced, else `tools.decide` |
+| 4 | effective `decide` path | **Automated** — `tools.typesafe.decide` when namespaced, else `tools.decide`; prints **UNKNOWN** (with the views checked) when no catalog view the probe read contains it |
 | 5 | nested `read` still in the pipeline | **Automated capture** of `execute.before/after`; the approval **prompt** is human-observed |
 
 Interpretation pointers printed by the report:
 
-- Section (3): if **none** of the six appear on the direct list after the flip, `codemode: true`
-  **removes** them from the native list (either/or); if some still appear, the surfaces
-  **coexist**.
+- Section (3): conclusions are drawn only from requests that exposed a **non-empty** direct tool
+  list. Across those, if **none** of the six appear after the flip, that is **consistent with**
+  `codemode: true` **removing** them from the native list (either/or); if some still appear, the
+  surfaces **coexist**. If *every* recorded request exposed an empty list, the report says
+  **UNKNOWN** — an empty hook is not evidence of removal.
 - Section (4): `typeof tools.X.decide` lies — only calling reveals absence. Trust the printed path.
-- Section (5): a `read` appearing in `execute.before`/`execute.after` means the nested sandbox call
-  still runs through the captured tool, so leaf permission checks still fire; whether the prompt is
-  shown is watched in the TUI.
+- Section (5): a `read` appearing in `execute.before`/`execute.after` shows a read call reached the
+  host's tool pipeline. The record alone cannot attribute it to the sandbox or to a direct call, and
+  the report does not. Whether the approval **prompt** appears when a script calls `read` is the
+  human-observed half — watch the TUI.
 
 #### 5. Clean up
 
