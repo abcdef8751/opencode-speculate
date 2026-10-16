@@ -37,7 +37,7 @@ const USAGE = `Usage: bun run harness [options]
   --arms <A,B,C>            arms to run (default: A,B,C)
   --runs <n>                runs per task/arm (default: 1)
   --driver mock|opencode    model driver (default: mock; mock is fully offline)
-  --max-turns <n>           arm A turn budget (default: 12)
+  --max-turns <n>           arm A turn budget (default: 24)
   --seed <n>                mock driver seed (default: 1)
   --out <dir>               report base directory (default: out)
   --keep-scratch            keep the per-run scratch directories
