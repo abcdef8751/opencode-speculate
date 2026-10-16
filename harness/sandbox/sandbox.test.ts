@@ -78,30 +78,33 @@ describe("file tools", () => {
 
     expect(await box.call("read", { path: "src/hello.ts" })).toContain("hello = 1");
 
-    const edited = await box.call("edit", { path: "src/hello.ts", oldString: "hello = 1", newString: "hello = 3" });
-    expect(edited).toEqual({ ok: true, path: "src/hello.ts", replacements: 1 });
+    const edited = await box.call("edit", { path: "src/hello.ts", find: "hello = 1", replace: "hello = 3" });
+    expect(edited).toMatchObject({ ok: true, path: "src/hello.ts", replacements: 1 });
     expect(await box.call("read", { path: "src/hello.ts", offset: 1, limit: 1 })).toBe("export const hello = 3");
 
-    expect(await box.call("glob", { pattern: "**/*.ts" })).toEqual(["src/hello.ts"]);
-    expect(await box.call("glob", { pattern: "*.md" })).toEqual(["notes.md"]);
+    expect(await box.call("glob", { pattern: "**/*.ts" })).toEqual({ files: ["src/hello.ts"], paths: ["src/hello.ts"], count: 1 });
+    expect(await box.call("glob", { pattern: "*.md" })).toEqual({ files: ["notes.md"], paths: ["notes.md"], count: 1 });
 
-    const matches = (await box.call("grep", { pattern: "bye = \\d" })) as { path: string; line: number }[];
-    expect(matches).toHaveLength(1);
-    expect(matches[0]!.path).toBe("src/hello.ts");
-    expect(matches[0]!.line).toBe(2);
+    const found = (await box.call("grep", { pattern: "bye = \\d" })) as { matches: { path: string; line: number }[]; files: string[] };
+    expect(found.matches).toHaveLength(1);
+    expect(found.matches[0]!.path).toBe("src/hello.ts");
+    expect(found.matches[0]!.line).toBe(2);
+    expect(found.files).toEqual(["src/hello.ts"]);
 
-    const literal = (await box.call("grep", { pattern: "hello = 3", literal: true })) as unknown[];
-    expect(literal).toHaveLength(1);
+    const literal = (await box.call("grep", { pattern: "hello = 3", literal: true })) as { matches: unknown[] };
+    expect(literal.matches).toHaveLength(1);
   });
 
-  test("edit fails when oldString is absent, empty, or ambiguous", async () => {
+  test("edit keeps accepting oldString/newString aliases, and fails when find is absent/empty/ambiguous", async () => {
     const dir = await scratch();
     const box = createToolBox({ dir });
     await box.call("write", { path: "a.txt", content: "x x" });
-    await expect(box.call("edit", { path: "a.txt", oldString: "zzz", newString: "y" })).rejects.toThrow(/not found/);
-    await expect(box.call("edit", { path: "a.txt", oldString: "", newString: "y" })).rejects.toThrow(/must not be empty/);
-    await expect(box.call("edit", { path: "a.txt", oldString: "x", newString: "y" })).rejects.toThrow(/not unique/);
-    await box.call("edit", { path: "a.txt", oldString: "x", newString: "y", replaceAll: true });
+    await expect(box.call("edit", { path: "a.txt", find: "zzz", replace: "y" })).rejects.toThrow(/not found/);
+    await expect(box.call("edit", { path: "a.txt", find: "", replace: "y" })).rejects.toThrow(/must not be empty/);
+    await expect(box.call("edit", { path: "a.txt", find: "x", replace: "y" })).rejects.toThrow(/not unique/);
+    await expect(box.call("edit", { path: "a.txt", oldString: "x", newString: "y", replaceAll: true })).resolves.toMatchObject({
+      replacements: 2,
+    });
     expect(await box.call("read", { path: "a.txt" })).toBe("y y");
   });
 
@@ -114,18 +117,23 @@ describe("file tools", () => {
 });
 
 describe("shell", () => {
-  test("runs argv without a shell and reports failures", async () => {
+  test("runs argv without a shell, reports exit codes, and reports failures", async () => {
     const dir = await scratch();
     await fs.writeFile(path.join(dir, "hello.txt"), "hi", "utf8");
     const box = createToolBox({ dir });
 
-    const ls = (await box.call("shell", { command: "ls", args: ["-1"] })) as { ok: boolean; stdout: string };
+    const ls = (await box.call("shell", { command: "ls -1" })) as { ok: boolean; stdout: string; exitCode: number };
     expect(ls.ok).toBe(true);
+    expect(ls.exitCode).toBe(0);
     expect(ls.stdout).toContain("hello.txt");
 
-    // no shell interpolation: `echo hi && rm -rf` must fail as an executable name
+    // non-zero exit is a reportable result (ratified shape carries `exitCode`)
+    const bad = (await box.call("shell", { command: "ls", args: ["/definitely/missing"] })) as { ok: boolean; exitCode: number };
+    expect(bad.ok).toBe(false);
+    expect(bad.exitCode).not.toBe(0);
+
+    // no shell interpolation: a binary that does not exist cannot be run at all
     await expect(box.call("shell", { command: "definitely-not-a-binary" })).rejects.toThrow(ToolBoxError);
-    await expect(box.call("shell", { command: "ls", args: ["/definitely/missing"] })).rejects.toThrow(/command failed/);
   });
 
   test("tokenizeCommand splits argv-style with quotes and never involves a shell", () => {

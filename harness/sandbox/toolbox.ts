@@ -271,7 +271,11 @@ const INPUT_SCHEMAS: Record<ToolBoxToolName, Record<string, unknown>> = {
   shell: {
     type: "object",
     properties: {
-      command: { type: "string", description: "Executable (argv style). Never a shell string unless `args` is omitted, in which case it is tokenised without a shell." },
+      command: {
+        type: "string",
+        description:
+          "Command line. Tokenised without a shell when `args` is omitted (no pipes, redirection or expansion); pass `args` (or an argv array) for exact arguments.",
+      },
       args: { type: "array", items: { type: "string" } },
       timeoutMs: { type: "number" },
     },
@@ -282,11 +286,11 @@ const INPUT_SCHEMAS: Record<ToolBoxToolName, Record<string, unknown>> = {
     type: "object",
     properties: {
       path: { type: "string" },
-      oldString: { type: "string" },
-      newString: { type: "string" },
-      replaceAll: { type: "boolean" },
+      find: { type: "string", description: "Exact text to replace." },
+      replace: { type: "string", description: "Replacement text." },
+      replaceAll: { type: "boolean", description: "Replace every occurrence (default: the single occurrence, error if ambiguous)." },
     },
-    required: ["path", "oldString", "newString"],
+    required: ["path", "find", "replace"],
     additionalProperties: false,
   },
   write: {
@@ -298,11 +302,11 @@ const INPUT_SCHEMAS: Record<ToolBoxToolName, Record<string, unknown>> = {
 };
 
 const DESCRIPTIONS: Record<ToolBoxToolName, string> = {
-  read: "Read a text file from the scratch directory.",
-  grep: "Search file contents in the scratch directory.",
-  glob: "List files matching a glob in the scratch directory.",
-  shell: "Run a command with argv (no shell) in the scratch directory.",
-  edit: "Replace a string in a file in the scratch directory.",
+  read: "Read a text file from the scratch directory. Returns the file text.",
+  grep: "Search file contents in the scratch directory. Returns `{ matches, files }`.",
+  glob: "List files matching a glob in the scratch directory. Returns `{ files, paths }`.",
+  shell: "Run a command (argv, no shell) in the scratch directory. Returns `{ stdout, stderr, exitCode }`.",
+  edit: "Replace `find` with `replace` in a file in the scratch directory.",
   write: "Write a file in the scratch directory.",
 };
 
@@ -346,21 +350,23 @@ const impls: Record<ToolBoxToolName, ToolImpl> = {
     const regex = new RegExp(record.literal === true ? escapeRegExp(patternText) : patternText, flags);
     const maxResults = optNumber(record, "maxResults") ?? 200;
     const matches: Json[] = [];
+    const files: string[] = [];
     for await (const relative of walk(rootAbs)) {
       if (include !== undefined && !include.test(relative)) continue;
       const text = await fs.readFile(path.join(rootAbs, relative), "utf8").catch(() => undefined);
       if (text === undefined) continue;
+      const prefix = base === "" ? "" : `${base.replace(/\/$/, "")}/`;
       const lines = text.split("\n");
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i]!;
         if (regex.test(line)) {
-          const prefix = base === "" ? "" : `${base.replace(/\/$/, "")}/`;
           matches.push({ path: `${prefix}${relative}`, line: i + 1, text: line.slice(0, 500) });
-          if (matches.length >= maxResults) return matches;
+          if (!files.includes(`${prefix}${relative}`)) files.push(`${prefix}${relative}`);
+          if (matches.length >= maxResults) return { matches, files, count: matches.length };
         }
       }
     }
-    return matches;
+    return { matches, files, count: matches.length };
   },
 
   async glob(input, ctx) {
@@ -368,14 +374,15 @@ const impls: Record<ToolBoxToolName, ToolImpl> = {
     const regex = globToRegExp(str(record, "pattern")!);
     const base = record.path === undefined ? "" : str(record, "path")!;
     const rootAbs = await resolveForRead(ctx.dir, base === "" ? "." : base);
-    const matches: Json[] = [];
+    const found: string[] = [];
     for await (const relative of walk(rootAbs)) {
       const baseName = relative.includes("/") ? relative.slice(relative.lastIndexOf("/") + 1) : relative;
       if (regex.test(relative) || regex.test(baseName)) {
-        matches.push(base === "" ? relative : `${base.replace(/\/$/, "")}/${relative}`);
+        found.push(base === "" ? relative : `${base.replace(/\/$/, "")}/${relative}`);
       }
     }
-    return matches.sort();
+    found.sort();
+    return { files: found, paths: found, count: found.length };
   },
 
   async shell(input, ctx, signal) {
@@ -409,6 +416,7 @@ const impls: Record<ToolBoxToolName, ToolImpl> = {
     }
 
     const timeout = optNumber(record, "timeoutMs") ?? ctx.shellTimeoutMs;
+    const argv = [file, ...args];
     try {
       const { stdout, stderr } = await execFileAsync(file, args, {
         cwd: ctx.dir,
@@ -419,16 +427,33 @@ const impls: Record<ToolBoxToolName, ToolImpl> = {
       });
       return {
         ok: true,
-        command: [file, ...args].join(" "),
+        command: argv.join(" "),
         stdout: truncate(String(stdout), ctx.maxOutputBytes),
         stderr: truncate(String(stderr), ctx.maxOutputBytes),
+        exitCode: 0,
+        text: truncate(String(stdout), ctx.maxOutputBytes),
       };
     } catch (error) {
       const err = error as { code?: unknown; stdout?: string; stderr?: string; killed?: boolean; message?: string };
+      // A spawned command that exits non-zero is a normal, reportable result (the ratified shape
+      // carries `exitCode`). "Could not run it at all" (ENOENT/EACCES), a timeout and a signal
+      // kill are thrown instead.
+      if (typeof err.code === "number" && err.killed !== true) {
+        const stdout = truncate(String(err.stdout ?? ""), ctx.maxOutputBytes);
+        const stderr = truncate(String(err.stderr ?? ""), ctx.maxOutputBytes);
+        return {
+          ok: false,
+          command: argv.join(" "),
+          stdout,
+          stderr,
+          exitCode: err.code,
+          text: stderr.length > 0 ? stderr : stdout,
+        };
+      }
       const detail = [
-        `command failed: ${[file, ...args].join(" ")}`,
-        err.killed === true ? "(killed: timeout)" : undefined,
-        typeof err.code === "number" || typeof err.code === "string" ? `exit=${String(err.code)}` : undefined,
+        `command failed: ${argv.join(" ")}`,
+        err.killed === true ? "(killed: timeout or signal)" : undefined,
+        typeof err.code === "string" ? `code=${err.code}` : undefined,
         err.stderr ? `stderr=${truncate(String(err.stderr), 2000)}` : undefined,
         err.message,
       ].filter(Boolean);
@@ -439,19 +464,29 @@ const impls: Record<ToolBoxToolName, ToolImpl> = {
   async edit(input, ctx) {
     const record = asRecord(input);
     const abs = await resolveForWrite(ctx.dir, str(record, "path"));
-    const oldString = str(record, "oldString")!;
-    const newString = str(record, "newString")!;
-    if (oldString === "") throw new ToolBoxError("oldString must not be empty");
+    // Ratified shape: `{ path, find, replace }`. `oldString`/`newString` stay accepted as aliases.
+    const find = str(record, "find", false) ?? str(record, "oldString", false);
+    const replacement = str(record, "replace", false) ?? str(record, "newString", false);
+    if (find === undefined || replacement === undefined) {
+      throw new ToolBoxError("edit requires `find` and `replace` (aliases: oldString/newString)");
+    }
+    if (find === "") throw new ToolBoxError("`find` must not be empty");
     const text = await fs.readFile(abs, "utf8");
-    const occurrences = text.split(oldString).length - 1;
-    if (occurrences === 0) throw new ToolBoxError(`oldString not found in ${String(record.path)}`);
+    const occurrences = text.split(find).length - 1;
+    if (occurrences === 0) throw new ToolBoxError(`find text not found in ${String(record.path)}`);
     const replaceAll = record.replaceAll === true;
     if (!replaceAll && occurrences > 1) {
-      throw new ToolBoxError(`oldString is not unique in ${String(record.path)} (${occurrences} matches)`);
+      throw new ToolBoxError(`find text is not unique in ${String(record.path)} (${occurrences} matches)`);
     }
-    const next = replaceAll ? text.split(oldString).join(newString) : text.replace(oldString, newString);
+    const next = replaceAll ? text.split(find).join(replacement) : text.replace(find, replacement);
     await fs.writeFile(abs, next, "utf8");
-    return { ok: true, path: String(record.path), replacements: replaceAll ? occurrences : 1 };
+    const replacements = replaceAll ? occurrences : 1;
+    return {
+      ok: true,
+      path: String(record.path),
+      replacements,
+      text: `edited ${String(record.path)} (${replacements} replacement${replacements === 1 ? "" : "s"})`,
+    };
   },
 
   async write(input, ctx) {
@@ -460,7 +495,8 @@ const impls: Record<ToolBoxToolName, ToolImpl> = {
     const content = str(record, "content", false) ?? "";
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, content, "utf8");
-    return { ok: true, path: String(record.path), bytes: Buffer.byteLength(content, "utf8") };
+    const bytes = Buffer.byteLength(content, "utf8");
+    return { ok: true, path: String(record.path), bytes, text: `wrote ${String(record.path)} (${bytes} bytes)` };
   },
 };
 

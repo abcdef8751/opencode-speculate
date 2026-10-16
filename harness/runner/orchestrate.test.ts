@@ -103,7 +103,7 @@ describe("runHarness", () => {
       // arm A: edit counter.txt 0 -> 1, then stop. A stale (non-fresh) copy would make the edit
       // fail, so `toolFailures === 0` proves each run got a pristine copy.
       createMockDriver: () => replayDriver([
-        response("editing", [{ name: "edit", input: { path: "counter.txt", oldString: "0", newString: "1" } }]),
+        response("editing", [{ name: "edit", input: { path: "counter.txt", find: "0", replace: "1" } }]),
         response("done", []),
       ]),
       createOpenCodeCliDriver,

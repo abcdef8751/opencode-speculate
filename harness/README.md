@@ -113,11 +113,26 @@ D2 tasks unless the task carries a duck-typed `judgeAnswers` map or `judgeScript
 
 `createToolBox({ dir, names })` exposes the six built-ins the `builtins-flip` work toggles —
 `read`, `grep`, `glob`, `shell`, `edit`, `write` — confined to `dir`. `names` honours
-`TaskDef.tools`. It implements both shapes:
+`TaskDef.tools`. The inputs/outputs follow the **ratified shapes** in `docs/CONTRACTS.md` §4:
 
-- `descriptors` / `call(name, input)` for arm A:
-- the Code Mode tool tree (via `executeScript`) for B/C, with `typesafe.decide` mounted from the
-  §1 plugin tool when a decide runtime is supplied.
+| tool | input | output |
+| --- | --- | --- |
+| `read` | `{ path }` (optional `offset`, `limit`) | file text (string; truncated at 200 KB) |
+| `grep` | `{ pattern, path? }` (optional `include`, `literal`, `ignoreCase`, `maxResults`) | `{ matches: [{ path, line, text }], files, count }` |
+| `glob` | `{ pattern }` | `{ files, paths, count }` |
+| `write` | `{ path, content }` | `{ ok, path, bytes, text }` (confirmation text) |
+| `edit` | `{ path, find, replace }` (optional `replaceAll`) | `{ ok, path, replacements, text }` |
+| `shell` | `{ command }` (optional `args`, `timeoutMs`) | `{ ok, stdout, stderr, exitCode, text, command }` |
+
+`edit` also accepts `oldString`/`newString` as aliases. `shell` returns a non-zero `exitCode`
+instead of throwing (the ratified shape carries it); it throws only when the command cannot be run
+at all (ENOENT/EACCES), times out, or is killed by a signal.
+
+The toolbox is exposed in two shapes:
+
+- `descriptors` / `call(name, input)` for arm A;
+- the Code Mode tool tree (via `executeScript`) for arms B/C, with `typesafe.decide` mounted from
+  the §1 plugin tool when a decide runtime is supplied.
 
 Implementation notes:
 
@@ -125,9 +140,9 @@ Implementation notes:
   timeout and `shell: false` — **never** `shell: true`, never a shell-interpolated command string;
 - every path goes through `path.resolve` + a prefix check, and the deepest existing ancestor is
   also `realpath`-checked (symlink escape);
-- `shell` takes argv: `{ command, args? }`, `{ command: ["git", "status"] }` or a tokenised
-  `{ command: "git status" }`. `tokenizeCommand` handles quotes only — **no** pipes, redirection,
-  globbing or variable expansion, because there is no shell;
+- `shell` takes `{ command }` (tokenised with quote support) plus optional `args`. `tokenizeCommand`
+  handles quotes only — **no** pipes, redirection, globbing or variable expansion, because there is
+  no shell;
 - the Code Mode interpreter exposes no network (`fetch`/`process` are `undefined` in the sandbox;
   asserted by a test). The harness never injects a network global;
 - **confinement is honest but not a security boundary.** It prevents accidental path escapes and
