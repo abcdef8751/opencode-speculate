@@ -337,12 +337,13 @@ describe("prompt-shape guard (self-test)", () => {
   });
 
   test("the consumption rule REJECTS an array result consumed as a single verdict", () => {
-    // The exact shape review pass 2 caught in the hint: array in, `.escalate` straight off it.
-    const broken = [
+    // Verbatim from src/hint.ts before merge(fix/hint-dead-handler) 691b540 — the shape review
+    // pass 2 caught. If the hint had been a task prompt, this guard would have failed it.
+    const hintBeforeFix = [
       'const d = await tools.typesafe.decide({ state: out, questions: [{ mode: "noul", id: "goal-met?", criteria: { true: "…", false: "…" } }], escalateBelow: 0.6 });',
       "if (d.escalate) { console.log(d.reason); }",
     ].join("\n");
-    expect(arrayConsumedAsSingleVerdict(broken)).toBe("d");
+    expect(arrayConsumedAsSingleVerdict(hintBeforeFix)).toBe("d");
 
     // ...and a stray `[0]` elsewhere in the field must NOT rescue it.
     const brokenWithDecoy = [
@@ -356,6 +357,8 @@ describe("prompt-shape guard (self-test)", () => {
   test("the consumption rule ACCEPTS every valid way to obtain one verdict", () => {
     const q = '[{ mode: "noul", id: "x", criteria: { true: "y", false: "n" } }]';
     const accepted = [
+      // the hint's line after 691b540
+      `const [d] = await tools.typesafe.decide({ state: out, questions: [{ mode: "noul", id: "goal-met?", criteria: { true: "…", false: "…" } }], escalateBelow: 0.6 });\nif (d.escalate) { console.log(d.reason); }`,
       // destructure the call
       `const [d] = await tools.typesafe.decide({ state, questions: ${q} });\nif (d.escalate) { console.log(d.reason); }`,
       // index the call inline
