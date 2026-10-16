@@ -86,7 +86,11 @@ export interface DecideResolution {
   codeModePath?: string
   /** Which catalog view the match came from (when found). */
   source?: CatalogViewName
-  /** Every view the probe consulted, with entry counts (`null` = not captured). */
+  /**
+   * Every view recorded for the report, with entry counts (`null` = not captured).
+   * `resolveDecide` fills this for all views before it returns, so a view listed
+   * after the match was not itself searched.
+   */
   checked?: { view: CatalogViewName; entries: number | null }[]
   /** Human sentence. When `found` is false this says *unknown*, never a cause. */
   note: string
@@ -183,12 +187,15 @@ interface DecideCandidate {
   namespace: string | undefined
   path: string
   namespaceFrom: NamespaceOrigin
-  /** Lower is better: 0 = namespace `typesafe`, 1 = exact bare `decide`, 2 = derived namespace. */
+  /** Lower is better: 0 = namespace `typesafe`, 1 = exact bare `decide`, 2 = any other namespace. */
   rank: number
 }
 
 /** `foo_decide`, `foo.decide`, `foo/decide` → the part before the separator is the namespace. */
 const DECIDE_ID_SUFFIX = /^(?<prefix>.+)[_./]decide$/
+
+/** A derivable namespace must be a single segment: no `_`, `.` or `/` anywhere in it. */
+const SINGLE_SEGMENT = /^[^_./]+$/
 
 /**
  * Classify one catalog entry as the `decide` tool, or not. Every id spelling the
@@ -216,9 +223,13 @@ function decideCandidate(entry: CatalogEntry): DecideCandidate | undefined {
     return { entry, namespace: undefined, path: "tools.decide", namespaceFrom: "none", rank: 1 }
   }
 
+  // Derive a namespace only from a single-segment prefix (`typesafe_decide` →
+  // `typesafe`). A multi-segment id (`a_b_decide`, `x.y_decide`) has a guessed
+  // split point, so we synthesize no path and let it fall through to UNKNOWN
+  // rather than print a fabricated `tools.<derived>.decide`.
   const match = DECIDE_ID_SUFFIX.exec(entry.id)
   const prefix = match?.groups?.prefix
-  if (prefix !== undefined && prefix.length > 0) {
+  if (prefix !== undefined && SINGLE_SEGMENT.test(prefix)) {
     return {
       entry,
       namespace: prefix,
@@ -233,9 +244,13 @@ function decideCandidate(entry: CatalogEntry): DecideCandidate | undefined {
 
 /**
  * Rank the decide candidates in one view: namespace `typesafe` first, then an exact
- * bare `decide`, then id-derived namespaces; ties broken by id for determinism.
- * Every candidate is returned so the note can name an ambiguity instead of silently
- * picking one.
+ * bare `decide`, then any other namespace; ties broken by id and then namespace so
+ * the order is total even for duplicate ids. Every candidate is returned so the note
+ * can name an ambiguity instead of silently picking one.
+ *
+ * Ambiguity is view-scoped by construction: `resolveDecide` takes the first view
+ * that yields any candidate and never merges candidates across views, so the note's
+ * "in this view" wording is load-bearing.
  */
 function chooseDecide(entries: CatalogEntry[]): { best: DecideCandidate; others: DecideCandidate[] } | undefined {
   const candidates: DecideCandidate[] = []
@@ -245,10 +260,20 @@ function chooseDecide(entries: CatalogEntry[]): { best: DecideCandidate; others:
   }
   if (candidates.length === 0) return undefined
   const sorted = [...candidates].sort(
-    (a, b) => a.rank - b.rank || (a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0),
+    (a, b) =>
+      a.rank - b.rank ||
+      (a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0) ||
+      byNamespace(a.namespace, b.namespace),
   )
   const [best, ...others] = sorted
   return { best: best as DecideCandidate, others }
+}
+
+/** Total-order tie-break on namespace (a missing namespace sorts first). */
+function byNamespace(a: string | undefined, b: string | undefined): number {
+  const left = a ?? ""
+  const right = b ?? ""
+  return left === right ? 0 : left < right ? -1 : 1
 }
 
 function describeDecide(
@@ -261,12 +286,15 @@ function describeDecide(
     best.namespace === undefined
       ? "no namespace"
       : `namespace "${best.namespace}"${best.namespaceFrom === "id" ? " (derived from the id)" : ""}`
+  // Only an alternative that resolves to a *different* call path is a real
+  // ambiguity; two spellings that both yield best.path are not.
+  const distinct = others.filter((o) => o.path !== best.path)
   const ambiguity =
-    others.length === 0
+    distinct.length === 0
       ? ""
-      : ` — ${others.length} other decide-shaped id(s) in this view (${others
+      : ` — ${distinct.length} other decide-shaped id(s) in this view (${distinct
           .map((o) => `"${o.entry.id}" → ${o.path}`)
-          .join(", ")}); picked by rank typesafe > bare decide > derived namespace`
+          .join(", ")}); picked by rank typesafe > bare decide > other namespace`
   return {
     found: true,
     id: best.entry.id,
@@ -305,10 +333,13 @@ export function decideViews(state: ProbeState): CatalogView[] {
  * transform-time snapshots while still live (the exact false-negative this fixes),
  * so we only report `found: false` after checking *all* views — and then only as
  * "unknown", never as a cause.
+ *
+ * The first view that yields a candidate wins; candidates are never merged across
+ * views, so ambiguity is view-scoped (see `chooseDecide`).
  */
 export function resolveDecide(views: CatalogView[]): DecideResolution {
   // Record every view up front (no truncation on early return) so the report can
-  // always list what was checked; which view matched is carried in `source`.
+  // list all of them; which view matched is carried in `source`.
   const checked = views.map((v) => ({ view: v.name, entries: v.entries === null ? null : v.entries.length }))
   for (const view of views) {
     if (view.entries === null) continue
@@ -659,9 +690,9 @@ function printReport(state: ProbeState): void {
     console.log("")
     console.log("INTERPRETATION: a `read` execute.before/after shows a read call reached the host's tool pipeline.")
     console.log("This record alone cannot say whether it came from inside the sandbox or from a direct call.")
-    console.log("If it came from the sandbox, then the sandbox did not bypass the pipeline, so a leaf permission")
-    console.log("check would still fire for it. Whether the approval PROMPT appears is HUMAN-observed in the TUI")
-    console.log("at the moment the script runs.")
+    console.log("If it came from the sandbox, then it reached the pipeline where the leaf permission check is")
+    console.log("applied; whether that check actually fires is what the TUI prompt observation confirms, not this")
+    console.log("record.")
   }
 
   renderSection("raw summary", "[AUTOMATED]")
