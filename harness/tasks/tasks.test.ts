@@ -107,49 +107,64 @@ async function solve(task: TaskDef, dir: string): Promise<void> {
  * passing it as `questions` makes `mode`/`id` undefined and worker A's validator throws
  * (`decide: question at index 0 needs a non-empty string "id"`). Substring-only assertions are
  * what let that slip through before, so these helpers inspect the literal's SHAPE.
+ *
+ * §1's "Consumption caution" adds the mirror-image failure: an ARRAY `questions` yields
+ * `DecideVerdict[]`, so an example that branches on a single verdict must destructure/index the
+ * result first (`const d = verdicts[0]` / `const [d] = await decide(… )`). Reading `.escalate`
+ * straight off the array is `undefined` and the handler becomes silently dead code. That is why
+ * the consumption rule below is tied to the decide call, not grepped anywhere in the field.
  * ------------------------------------------------------------------ */
 
 export type QuestionsShape = "array" | "single-question" | "id-keyed-map" | "unrecognised";
 
 const PROMPT_FIELDS = ["prompt", "scriptPrompt", "escalationPrompt"] as const;
 
-/** Every `questions: <literal>` sample in `text`, with brackets balanced and strings skipped. */
+/**
+ * Index just past the bracket matching `text[start]` (`[`, `{` or `(`), skipping string
+ * contents. Returns `-1` when `text[start]` is not an opener or nothing matches.
+ */
+export function balancedEnd(text: string, start: number): number {
+  const opener = text[start];
+  if (opener !== "[" && opener !== "{" && opener !== "(") return -1;
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i] as string;
+    if (quote !== undefined) {
+      if (ch === "\\") {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "[" || ch === "{" || ch === "(") depth += 1;
+    else if (ch === "]" || ch === "}" || ch === ")") {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Every `questions: <literal>` (or `questions = <literal>`) sample in `text`.
+ * The `=` alternative keeps an assignment form visible instead of silently ignored.
+ */
 export function questionsLiterals(text: string): string[] {
   const found: string[] = [];
-  const marker = /questions:\s*/g;
+  const marker = /questions\s*[:=]\s*/g;
   let match: RegExpExecArray | null;
   while ((match = marker.exec(text)) !== null) {
     const start = match.index + match[0].length;
-    const first = text[start];
-    if (first !== "[" && first !== "{") continue;
-    let depth = 0;
-    let quote: string | undefined;
-    let i = start;
-    for (; i < text.length; i += 1) {
-      const ch = text[i] as string;
-      if (quote !== undefined) {
-        if (ch === "\\") {
-          i += 1;
-          continue;
-        }
-        if (ch === quote) quote = undefined;
-        continue;
-      }
-      if (ch === '"' || ch === "'" || ch === "`") {
-        quote = ch;
-        continue;
-      }
-      if (ch === "[" || ch === "{" || ch === "(") depth += 1;
-      else if (ch === "]" || ch === "}" || ch === ")") {
-        depth -= 1;
-        if (depth === 0) {
-          i += 1;
-          break;
-        }
-      }
-    }
-    found.push(text.slice(start, i));
-    marker.lastIndex = i;
+    const end = balancedEnd(text, start);
+    if (end === -1) continue;
+    found.push(text.slice(start, end));
+    marker.lastIndex = end;
   }
   return found;
 }
@@ -169,6 +184,98 @@ export function questionIds(literal: string): string[] {
   const out: string[] = [];
   for (const m of literal.matchAll(/\bid\s*:\s*"([^"]*)"/g)) out.push(m[1] ?? "");
   return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Consumption rule: an array-form result must be reduced before `.escalate`
+ * ------------------------------------------------------------------ */
+
+/** One `tools.typesafe.decide( … )` call site in a prompt field. */
+export interface DecideCallSite {
+  /** Identifier the result is bound to (`const <name> = …` / `const [<name>] = …`). */
+  bound?: string;
+  /** The binding destructures: `const [d] = await decide(…)`. */
+  destructured: boolean;
+  /** The result is indexed inline: `const d = (await decide(…))[0]` / `.at(0)`. */
+  inlineExtracted: boolean;
+  /** This call's `questions:` literal, when it has one. */
+  questions?: string;
+}
+
+/** Text between the last statement boundary before `index` and `index` (bounded). */
+function statementHead(text: string, index: number): string {
+  const window = text.slice(Math.max(0, index - 300), index);
+  // Deliberately NOT cut at single newlines: `const verdicts =\n await decide(` is one statement.
+  const cut = Math.max(
+    window.lastIndexOf(";"),
+    window.lastIndexOf("{"),
+    window.lastIndexOf("}"),
+    window.lastIndexOf("\n\n"),
+  );
+  return window.slice(cut + 1);
+}
+
+/** Every `tools.typesafe.decide( … )` call in `text`, with how its result is bound. */
+export function decideCallSites(text: string): DecideCallSite[] {
+  const sites: DecideCallSite[] = [];
+  const marker = /tools\.typesafe\.decide\s*/g;
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(text)) !== null) {
+    const open = text.indexOf("(", marker.lastIndex);
+    if (open === -1) break;
+    const end = balancedEnd(text, open);
+    if (end === -1) break;
+
+    const head = statementHead(text, match.index);
+    const destructured =
+      /(?:const|let|var)\s+\[\s*([A-Za-z_$][\w$]*)[^\]]*\]\s*=\s*\(?\s*(?:await\s+)?$/.exec(head);
+    const plain = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\(?\s*(?:await\s+)?$/.exec(head);
+    const bound =
+      destructured !== null ? destructured[1] : plain !== null ? plain[1] : undefined;
+    // `const d = (await decide( … ))[0]` / `.at(0)` — extraction applied to the call itself.
+    const inlineExtracted = /^\s*\)*\s*(?:\[|\.at\s*\()/.test(text.slice(end, end + 24));
+
+    const questions = questionsLiterals(text.slice(open + 1, end - 1))[0];
+    sites.push({
+      ...(bound === undefined ? {} : { bound }),
+      destructured: destructured !== null,
+      inlineExtracted,
+      ...(questions === undefined ? {} : { questions }),
+    });
+    marker.lastIndex = end;
+  }
+  return sites;
+}
+
+/** `name` is reduced from the array `bound` to a single verdict. */
+function extractedFrom(text: string, bound: string, name: string): boolean {
+  const index = new RegExp(`\\b${name}\\b\\s*=\\s*\\(?\\s*${bound}\\s*(?:\\[|\\.at\\s*\\()`);
+  if (index.test(text)) return true;
+  return new RegExp(`\\[\\s*${name}\\s*(?:,[^\\]]*)?\\]\\s*=\\s*${bound}\\b`).test(text);
+}
+
+/**
+ * Names the identifier that consumes an ARRAY-form `decide` result directly as a single verdict
+ * (i.e. `<name>.escalate` where `<name>` is the array or is never reduced from it), or
+ * `undefined` when the prompt is fine / the rule does not apply.
+ *
+ * Tied to the decide call: a stray `[0]` elsewhere in the field cannot satisfy it.
+ */
+export function arrayConsumedAsSingleVerdict(text: string): string | undefined {
+  const arraySites = decideCallSites(text).filter(
+    (site) => site.questions !== undefined && classifyQuestionsLiteral(site.questions) === "array",
+  );
+  if (arraySites.length === 0) return undefined;
+  const consumed = /\b([A-Za-z_$][\w$]*)\.escalate\b/.exec(text);
+  if (consumed === null) return undefined;
+  const name = consumed[1] ?? "";
+  const derived = arraySites.some(
+    (site) =>
+      (site.destructured && site.bound === name) ||
+      (site.inlineExtracted && site.bound === name) ||
+      (site.bound !== undefined && extractedFrom(text, site.bound, name)),
+  );
+  return derived ? undefined : name;
 }
 
 interface PromptSample {
@@ -223,6 +330,53 @@ describe("prompt-shape guard (self-test)", () => {
   test("reads the question ids out of a literal", () => {
     expect(questionIds('{ mode: "noul", id: "triage", criterion: "..." }')).toEqual(["triage"]);
     expect(questionIds('{ mode: "noul", criteria: { true: "a", false: "b" } }')).toEqual([]);
+  });
+
+  test("also sees an assignment form (`questions = …`), not just `questions:`", () => {
+    expect(questionsLiterals('questions = [{ mode: "noul", id: "x" }]').length).toBe(1);
+  });
+
+  test("the consumption rule REJECTS an array result consumed as a single verdict", () => {
+    // Verbatim from src/hint.ts before merge(fix/hint-dead-handler) 691b540 — the shape review
+    // pass 2 caught. If the hint had been a task prompt, this guard would have failed it.
+    const hintBeforeFix = [
+      'const d = await tools.typesafe.decide({ state: out, questions: [{ mode: "noul", id: "goal-met?", criteria: { true: "…", false: "…" } }], escalateBelow: 0.6 });',
+      "if (d.escalate) { console.log(d.reason); }",
+    ].join("\n");
+    expect(arrayConsumedAsSingleVerdict(hintBeforeFix)).toBe("d");
+
+    // ...and a stray `[0]` elsewhere in the field must NOT rescue it.
+    const brokenWithDecoy = [
+      "// see item [0] of the ledger for context",
+      "const d = await tools.typesafe.decide({ state, questions: [{ mode: \"noul\", id: \"x\" }] });",
+      "if (d.escalate) { console.log(d.reason); }",
+    ].join("\n");
+    expect(arrayConsumedAsSingleVerdict(brokenWithDecoy)).toBe("d");
+  });
+
+  test("the consumption rule ACCEPTS every valid way to obtain one verdict", () => {
+    const q = '[{ mode: "noul", id: "x", criteria: { true: "y", false: "n" } }]';
+    const accepted = [
+      // the hint's line after 691b540
+      `const [d] = await tools.typesafe.decide({ state: out, questions: [{ mode: "noul", id: "goal-met?", criteria: { true: "…", false: "…" } }], escalateBelow: 0.6 });\nif (d.escalate) { console.log(d.reason); }`,
+      // destructure the call
+      `const [d] = await tools.typesafe.decide({ state, questions: ${q} });\nif (d.escalate) { console.log(d.reason); }`,
+      // index the call inline
+      `const d = (await tools.typesafe.decide({ state, questions: ${q} }))[0];\nif (d.escalate) { console.log(d.reason); }`,
+      // index a bound result
+      `const verdicts = await tools.typesafe.decide({ state, questions: ${q} });\nconst d = verdicts[0];\nif (d.escalate) { console.log(d.reason); }`,
+      // `.at(0)` a bound result
+      `const verdicts = await tools.typesafe.decide({ state, questions: ${q} });\nconst d = verdicts.at(0);\nif (d.escalate) { console.log(d.reason); }`,
+      // destructure a bound result
+      `const verdicts = await tools.typesafe.decide({ state, questions: ${q} });\nconst [d] = verdicts;\nif (d.escalate) { console.log(d.reason); }`,
+      // formatting variants: newline before `await`, spaced index, no semicolons
+      `const verdicts =\n  await tools.typesafe.decide({\n    state,\n    questions: ${q},\n  })\nconst d = verdicts[ 0 ]\nif (d.escalate) { console.log(d.reason) }`,
+      // single-question form: rule does not apply
+      `const d = await tools.typesafe.decide({ state, questions: { mode: "noul", id: "x" } });\nif (d.escalate) { console.log(d.reason); }`,
+    ];
+    for (const form of accepted) {
+      expect(arrayConsumedAsSingleVerdict(form)).toBeUndefined();
+    }
   });
 });
 
@@ -286,20 +440,22 @@ describe("TASKS catalog", () => {
     }
   });
 
-  test("an array-form example that inspects `d.escalate` shows how to get one verdict", () => {
-    // An array input yields DecideVerdict[] (§1), so `d` must be reduced before `d.escalate`.
+  test("an array-form example consumed as a single verdict must show the extraction", () => {
+    // §1 "Consumption caution": an array `questions` yields `DecideVerdict[]`, so a prompt that
+    // branches on `d.escalate` must show how `d` is reduced from the call's result. The check is
+    // tied to the decide call — a stray `[0]` elsewhere in the field cannot satisfy it.
     let checked = 0;
     for (const task of TASKS) {
       for (const field of PROMPT_FIELDS) {
         const text = task[field];
         if (typeof text !== "string") continue;
-        const shapes = questionsLiterals(text).map(classifyQuestionsLiteral);
-        if (!shapes.includes("array") || !text.includes("d.escalate")) continue;
-        checked += 1;
-        const reduces = /(\[0\]|\[\s*d\s*\])/.test(text);
-        expect(`${task.id}.${field}:${reduces ? "ok" : "no-single-verdict-extraction"}`).toBe(
-          `${task.id}.${field}:ok`,
+        const hasArray = decideCallSites(text).some(
+          (site) => site.questions !== undefined && classifyQuestionsLiteral(site.questions) === "array",
         );
+        if (!hasArray || !/\b[A-Za-z_$][\w$]*\.escalate\b/.test(text)) continue;
+        checked += 1;
+        const offender = arrayConsumedAsSingleVerdict(text);
+        expect(`${task.id}.${field}:${offender ?? "ok"}`).toBe(`${task.id}.${field}:ok`);
       }
     }
     expect(checked).toBeGreaterThanOrEqual(1);

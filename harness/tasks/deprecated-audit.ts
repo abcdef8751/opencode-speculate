@@ -43,8 +43,14 @@ export const deprecatedAudit: TaskWithJudgeAnswers = {
   fixture: "harness/fixtures/service-tree",
   tools: ["read", "grep", "glob", "write"],
   /**
-   * Offline judge answers for the canned arm-C program (non-escalating: no `escalateBelow`).
-   * `actionable` is what the canned program sends; `audit` is what the arm-C prompt teaches.
+   * Offline judge answers for the arm-C `decide` call. `actionable` is the id the canned mock
+   * program sends; `audit` is the id the arm-C prompt teaches.
+   *
+   * This task is designed NOT to escalate, by two independent mechanisms: the canned program
+   * passes no `escalateBelow` (§1: with no threshold anywhere, escalation is opt-in and never
+   * fires), and both scripted answers are high-confidence (`noul: 0.95` => `|2p-1| = 0.9`).
+   * The prompt example does show `escalateBelow: 0.5`, but 0.9 > 0.5, so a live model following
+   * the prompt would not escalate either.
    */
   judgeAnswers: {
     actionable: { noul: 0.95, confidence: 0.9 },
