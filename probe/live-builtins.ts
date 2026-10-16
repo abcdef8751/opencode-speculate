@@ -198,7 +198,7 @@ interface DecideCandidate {
 }
 
 /** `foo_decide`, `foo.decide`, `foo/decide` → the part before the separator is the namespace. */
-const DECIDE_ID_SUFFIX = /^(?<prefix>.+)[_./]decide$/
+const DECIDE_ID_SUFFIX = /^(?<prefix>.*)[_./]decide$/
 
 /**
  * A derivable namespace must be a single identifier segment that contains no
@@ -256,8 +256,15 @@ function classifyDecide(entry: CatalogEntry): DecidedEntry {
   }
 
   const match = DECIDE_ID_SUFFIX.exec(entry.id)
-  const prefix = match?.groups?.prefix
-  if (prefix === undefined) return { kind: "other" }
+  if (match === null) return { kind: "other" }
+  const prefix = match.groups?.prefix ?? ""
+
+  if (prefix.length === 0) {
+    return {
+      kind: "unresolved",
+      unresolved: { id: entry.id, reason: `no namespace segment before "decide", so no call path can be derived` },
+    }
+  }
 
   if (!DERIVABLE_NAMESPACE.test(prefix)) {
     return {
@@ -332,15 +339,22 @@ function describeDecide(
       ? "no namespace"
       : `namespace "${best.namespace}"${best.namespaceFrom === "id" ? " (derived from the id)" : ""}`
   // Only an alternative that resolves to a *different* call path is a real
-  // ambiguity; two spellings that both yield best.path are not. The count is of
-  // distinct alternative paths, not of ids.
-  const distinct = others.filter((o) => o.path !== best.path)
+  // ambiguity; two spellings that both yield best.path are not. Group the rest by
+  // path so the count is of distinct targets, not of ids: two spellings of the same
+  // non-best path count and list once (all their ids shown together).
+  const alternatives = new Map<string, string[]>()
+  for (const o of others) {
+    if (o.path === best.path) continue
+    const ids = alternatives.get(o.path) ?? []
+    ids.push(o.entry.id)
+    alternatives.set(o.path, ids)
+  }
   const ambiguity =
-    distinct.length === 0
+    alternatives.size === 0
       ? ""
-      : ` — ${distinct.length} other resolve target(s) in this view (${distinct
-          .map((o) => `"${o.entry.id}" → ${o.path}`)
-          .join(", ")}); picked by rank typesafe > bare decide > other namespace`
+      : ` — ${alternatives.size} other resolve target(s) in this view (${[...alternatives]
+          .map(([path, ids]) => `${ids.map((id) => `"${id}"`).join(", ")} → ${path}`)
+          .join("; ")}); picked by rank typesafe > bare decide > other namespace`
   const seenNotDerivable =
     unresolved.length === 0
       ? ""
@@ -368,10 +382,10 @@ function unknownDecideNote(checked: { view: CatalogViewName; entries: number | n
   )
 }
 
-/** Note for a decide-shaped id that was seen but cannot be turned into a call path. */
-function unresolvedDecideNote(view: CatalogViewName, unresolved: UnresolvedDecide[]): string {
+/** Note for decide-shaped ids that were seen but cannot be turned into a call path. */
+function unresolvedDecideNote(unresolved: UnresolvedDecide[]): string {
   const listed = unresolved.map((u) => `"${u.id}" (${u.reason})`).join("; ")
-  return `a decide-shaped id was seen in the ${view} view but its namespace cannot be derived, so no call path can be justified: ${listed}. This is not evidence of absence.`
+  return `a decide-shaped id was seen in the catalog but its namespace cannot be derived, so no call path can be justified: ${listed}. This is not evidence of absence, and the id may be an unrelated tool that merely ends in "decide".`
 }
 
 /** The catalog views a record holds, most complete first. */
@@ -395,34 +409,40 @@ export function decideViews(state: ProbeState): CatalogView[] {
  * merged across views, so ambiguity is view-scoped (see `chooseDecide`).
  *
  * A decide-shaped id that cannot be classified (its namespace prefix is not a single
- * identifier segment) is carried as `unresolved`, not treated as absent: if no view
- * yields a resolvable candidate but some view held such an id, `found` is false and
- * the note says "seen but not derivable" instead of "not visible".
+ * separator-free identifier segment) is carried as `unresolved`, not treated as
+ * absent. Unresolved ids are unioned across *every* view consulted, so one seen in a
+ * more complete earlier view is never dropped when a later view resolves; only
+ * `others` stays view-scoped. If no view yields a resolvable candidate but any view
+ * held such an id, `found` is false and the note says "seen but not derivable"
+ * instead of "not visible".
  */
 export function resolveDecide(views: CatalogView[]): DecideResolution {
   // Record every view up front (no truncation on early return) so the report can
   // list all of them; which view matched is carried in `source`.
   const checked = views.map((v) => ({ view: v.name, entries: v.entries === null ? null : v.entries.length }))
-  let seenNotDerivable: { view: CatalogViewName; unresolved: UnresolvedDecide[] } | undefined
+  // Union of seen-but-not-derivable ids across every view consulted so far, so an id
+  // from a more complete earlier view is never dropped when a later view resolves.
+  // `others` stays view-scoped (the resolving view's alternatives).
+  const unresolvedSeen: UnresolvedDecide[] = []
+  const unresolvedIds = new Set<string>()
+  const remember = (list: UnresolvedDecide[]): void => {
+    for (const u of list) {
+      if (unresolvedIds.has(u.id)) continue
+      unresolvedIds.add(u.id)
+      unresolvedSeen.push(u)
+    }
+  }
   for (const view of views) {
     if (view.entries === null) continue
     const pick = chooseDecide(view.entries)
     if (pick === undefined) continue
+    remember(pick.unresolved)
     if (pick.best !== undefined) {
-      return describeDecide({ best: pick.best, others: pick.others, unresolved: pick.unresolved }, view.name, checked)
-    }
-    // decide-shaped but not derivable here: remember it and keep looking.
-    if (seenNotDerivable === undefined && pick.unresolved.length > 0) {
-      seenNotDerivable = { view: view.name, unresolved: pick.unresolved }
+      return describeDecide({ best: pick.best, others: pick.others, unresolved: unresolvedSeen }, view.name, checked)
     }
   }
-  if (seenNotDerivable !== undefined) {
-    return {
-      found: false,
-      checked,
-      unresolved: seenNotDerivable.unresolved,
-      note: unresolvedDecideNote(seenNotDerivable.view, seenNotDerivable.unresolved),
-    }
+  if (unresolvedSeen.length > 0) {
+    return { found: false, checked, unresolved: unresolvedSeen, note: unresolvedDecideNote(unresolvedSeen) }
   }
   return { found: false, checked, note: unknownDecideNote(checked) }
 }
@@ -735,7 +755,8 @@ function printReport(state: ProbeState): void {
       for (const u of unresolved) console.log(`  - ${u.id}: ${u.reason}`)
       console.log("")
       console.log("This is NOT evidence of absence: the tool may live under a namespace that contains a")
-      console.log("separator. Inspect the raw catalog (`bun run probe --json`) or call the path explicitly.")
+      console.log("separator, or this may be an unrelated tool whose id merely ends in \"decide\". Inspect the")
+      console.log("raw catalog (`bun run probe --json`) or call the path explicitly.")
     } else {
       console.log("UNKNOWN — decide is not visible from any catalog view this probe captured.")
       console.log("")
@@ -787,6 +808,10 @@ function printReport(state: ProbeState): void {
   console.log(`tool calls seen: ${state.toolCalls.length}`)
   console.log(`model requests observed: ${state.directLists.length}`)
   console.log(`never-flip ids (always skipped): [${NEVER_FLIP_IDS.join(", ")}]`)
+  const unresolvedDecide = decide.unresolved ?? []
+  if (unresolvedDecide.length > 0) {
+    console.log(`decide-shaped ids seen but not derivable: [${unresolvedDecide.map((u) => u.id).join(", ")}]`)
+  }
 
   const incomplete: string[] = []
   if (state.transform.runs === 0) incomplete.push("(1)(2) tool transform never ran")
