@@ -18,7 +18,7 @@ export function decideHint(config?: Pick<DecideConfig, "model">): string {
   return [
     "## decide() — fuzzy judgement from Code Mode",
     'Call `tools.typesafe.decide({ state, questions, escalateBelow? })`. If that path is missing, run `search("decide")` to find it.',
-    "One question → one verdict object; an array of questions → an array of verdicts — one Jev request.",
+    "One question → one verdict object; an array of questions → an array of verdicts — destructure or index it before reading `.escalate`. One Jev request.",
     "",
     "`questions` takes ONE question object, or an ARRAY of them. Never an id-keyed map (`{ id: { … } }`):",
     'one:  questions: { mode: "noul", id: "q1", criterion: "…", criteria: { true: "…", false: "…" } }',
@@ -37,7 +37,7 @@ export function decideHint(config?: Pick<DecideConfig, "model">): string {
     "const seen = [];                         // you push one { tool, out } entry per step",
     "for (const step of steps) {               // step = { tool, run() }: one tool call per step",
     "  const out = await step.run(); seen.push({ tool: step.tool, out });",
-    '  const d = await tools.typesafe.decide({ state: out, questions: [{ mode: "noul", id: "goal-met?", criteria: { true: "…", false: "…" } }], escalateBelow: 0.6 });',
+    '  const [d] = await tools.typesafe.decide({ state: out, questions: [{ mode: "noul", id: "goal-met?", criteria: { true: "…", false: "…" } }], escalateBelow: 0.6 });',
     "  if (d.escalate) { console.log(JSON.stringify({ reason: d.reason, last: seen.at(-1), done: seen.map(s => s.tool) })); break }",
     "}",
   ].join("\n")
