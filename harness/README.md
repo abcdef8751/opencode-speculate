@@ -25,8 +25,8 @@ Output: `out/<stamp>/report.json` (the frozen `RunReport`) and `out/<stamp>/repo
 (per-arm summary table, gate verdict, per-run detail, harness notes). The CLI also prints the
 summary table and the gate.
 
-Tests: `bun test harness` (unit tests for the sandbox, arms, metrics, report, shim, CLI parsing).
-`bun run typecheck` covers everything.
+Tests: `bun test harness` (unit tests for the sandbox, arms, metrics, report, CLI parsing and the
+module loader). `bun run typecheck` covers everything.
 
 ## The three arms
 
@@ -40,49 +40,51 @@ Each (task, run, arm) gets its own **fresh scratch directory** — a copy of `Ta
 `TaskDef.setup?.(dir)`. Scratch lives under `/tmp/opencode/harness-runs/<stamp>/<task>/run-<n>/<arm>`
 and is removed at the end unless `--keep-scratch` is passed. The fixture source is never mutated.
 
-## Driver conventions (contract friction — read this)
+## Driver conventions (how the arms look to a driver)
 
-`ModelDriver.complete(req)` is frozen and carries **no arm identifier**, so arm selection is
-communicated three ways; a driver must handle at least the marker:
+`ModelDriver.complete(req)` is frozen (`harness/types.ts`) and carries **no arm identifier**, so a
+driver distinguishes the arms from the request itself:
 
-1. the first system message begins with `harness:arm=<A|B|C>;task=<id>;run=<n>`
-   (`armSystemMessage()`; parse with `parseArmMarker()`);
-2. arm A receives the real `ToolBox.descriptors`; arms B/C receive a single synthetic `execute`
-   tool (`EXECUTE_TOOL`);
-3. arms B/C expect the program in `ModelResponse.text` (fenced or bare) **or** in an `execute` tool
-   call with `{ code }`; `extractScript()` accepts both.
+1. **tool list (primary signal)** — arm A receives the real `ToolBox.descriptors` (the six
+   built-ins); arms B/C receive the single synthetic `execute` tool (`EXECUTE_TOOL`).
+2. **prompt** — arm C's prompt names `tools.typesafe.decide({ state, questions })` (appended by
+   `scriptPrompt()`); arm B's prompt never mentions `decide`; arms B/C are told to answer with one
+   Code Mode program and arm A to call tools turn by turn.
+3. **response shape** — arms B/C expect the program in `ModelResponse.text` (fenced or bare) **or**
+   in an `execute` tool call with `{ code }` (`extractScript()` accepts both); arm A expects
+   `toolCalls[]`.
 
-This is the only place the harness had to invent a convention, because the frozen `ModelDriver`
-type cannot express it. It is documented here and surfaced in the report's harness notes.
+The first system message additionally starts with an **informational** marker
+`harness:arm=<A|B|C>;task=<id>;run=<n>` (`armSystemMessage()`; `parseArmMarker()`). It is emitted
+for transcript readability, for the harness's own tests, and because a driver that keys its canned
+response on the task id finds that id in it — but **no driver needs to parse it**, and nothing in
+the harness depends on a driver doing so. `harness/drivers/mock.ts` (D2), for example, detects the
+arm from the tool list plus the prompt text, not from the marker.
 
-## Module resolution and the offline fallback
+## Module resolution
 
-`harness/runner/sources.ts` loads the frozen entry points and **prefers the real modules**:
+`harness/runner/sources.ts` loads the three real modules and asserts their shape on load:
 
-- `harness/tasks/index.ts` → `TASKS`, `getTask`
-- `harness/drivers/index.ts` → `createMockDriver`, `createOpenCodeCliDriver`, `createFakeJudge`
-- `src/decide/index.ts` → `createDecideRuntime` (§1), plus `createJevJudge` when present
+- `harness/tasks/index.ts` → `TASKS`, `getTask` (worker D2)
+- `harness/drivers/index.ts` → `createMockDriver`, `createOpenCodeCliDriver`, `createFakeJudge` (D2)
+- `src/decide/index.ts` → `createDecideRuntime` (§1) and `createJevJudge` (worker A)
 
-D1's worktree is cut from the scaffold commit, so those files do not exist here. When a module is
-**absent** (module-not-found only — any other load error is rethrown), the harness falls back to the
-labelled dev shim in `harness/runner/fallback/**`:
+There is exactly **one** implementation of each seam. A missing module is a broken checkout, not a
+supported state: the loader fails immediately with an actionable message naming the file, its owner
+and the exports it must provide, and it never substitutes a stand-in. A module that exists but
+exports the wrong shape fails the same way. Only "module not found" is treated as the missing-file
+case; any other load error (a syntax error, a missing transitive dependency) is rethrown as-is.
 
-- `fallback/scenario.ts` — three tiny offline tasks + fixtures (a typo fix, a TODO count, a long-loop
-  uppercase job) with canned arm-A plans, canned B/C programs and fake-judge answers;
-- `fallback/drivers.ts` — deterministic mock driver, `createFakeJudge`, and a real
-  `opencode run` CLI driver;
-- `fallback/decide-shim.ts` — a **dev shim** implementing the §1 seam only well enough for arm C to
-  run offline. It is not the contract implementation and must not be treated as one.
+The loaded set is recorded in `report.md` and printed after a run as
+`modules: tasks=module drivers=module decide=module`; `--list` prints only non-fatal warnings (for
+example a `DECIDE_NAMESPACE` mismatch).
 
-Every fallback use is reported (`warning:` on stderr, a `modules: tasks=… drivers=… decide=…` note
-in `report.md`). Once D2/A land, the real modules are used and the shim goes dormant — this was
-verified by overlaying `harness/**` on `main` (which already has `src/decide/index.ts`) and running
-`bun run harness --tasks … --arms A,B,C --driver mock`: the report's harness note read
-`modules: tasks=fallback drivers=fallback decide=module`, arm C used the real engine, and
-`bun test harness` + `bun run typecheck` stayed green. Because the
-fallback judge only knows the fallback question ids, arm C escalates ("no usable answer") for real
-D2 tasks unless the task carries a duck-typed `judgeAnswers` map or `judgeScript` is supplied to
-`runHarness()`.
+Because the offline fake judge (`harness/drivers/fake-judge.ts`) **throws** for question ids it has
+no answer for (fail loud, §1), arm C only completes when its questions are scripted. Precedence for
+those answers: an optional duck-typed `TaskDef.judgeAnswers`, then the `judgeScript` passed to
+`runHarness()` (the CLI exposes no flag for it). Only arm C calls `decide`, so a missing script
+affects nothing else; when one is missing the decide call fails inside the sandbox and is counted
+as a tool failure *and* a script failure, rather than being papered over.
 
 ## Metrics
 
@@ -159,29 +161,32 @@ Implementation notes:
 
 ## Drivers
 
-**`--driver mock`** uses `createMockDriver()`: deterministic (`seed`), offline, and its token
-accounting is **synthetic** (`usageModel: "small" | "cached-heavy"`). Reports that use it are
-labelled "Synthetic usage" in `report.md` and on stdout — treat mock numbers as plumbing evidence,
-never as measurement.
+**`--driver mock`** uses `createMockDriver()` (worker D2, `harness/drivers/mock.ts`): deterministic
+(`seed`), offline, and its token accounting is **synthetic** (`usageModel: "small" | "cached-heavy"`).
+Reports that use it are labelled "Synthetic usage" in `report.md` and on stdout — treat mock numbers
+as plumbing evidence, never as measurement.
 
-**`--driver opencode`** uses `createOpenCodeCliDriver()`:
+**`--driver opencode`** uses `createOpenCodeCliDriver()` (worker D2,
+`harness/drivers/opencode-cli.ts`), which runs:
 
 ```
-opencode run --format json --standalone [--model <provider/model>] [--agent <agent>] <prompt>
+opencode run --format json [--model <provider/model>] [--agent <agent>] <prompt>
 ```
 
-Assumptions and limitations (not exercised in this run — it needs a live model):
+Assumptions and limitations (documented by its owner; not exercised by the harness DoD run because
+it needs a live model):
 
-- one `complete()` == one `opencode run` invocation, so `turns` counts invocations, not model turns;
-- the child runs with the scratch directory as `cwd` and uses the **CLI's own tools** — the harness
-  `ToolBox` cannot be injected into the CLI, so arm A is not turn-by-turn here and the three arms
-  differ only in prompt;
-- the transcript is rendered into one prompt, passed as a single positional argument;
-- `--standalone` is used so the run does not attach to a background service;
-- token usage is parsed tolerantly from JSON lines (`usage`/`tokens` keys in snake_case or
-  camelCase; the last usage object wins). Unparsed output is reported as notes and usage zeros
-  rather than failing the run;
-- `process.env` is inherited so the CLI can resolve its own auth. Keys are never logged.
+- one `complete()` == one `opencode run` invocation (`spawnSync`, cwd inherited), so `turns` counts
+  invocations, not model turns;
+- the child uses the **CLI's own tools** — the harness `ToolBox` cannot be injected into the CLI, so
+  arm A is not turn-by-turn here and the arms differ only in prompt;
+- `tool_use` events are deliberately ignored (the CLI already ran those tools) and the driver returns
+  no tool calls, so arm A's loop ends after that one turn;
+- token usage is summed from `step_finish` events (`tokens.input` → `fresh`,
+  `tokens.cache.read`/`cache_read` → `cacheRead`, `tokens.cache.write`/`cache_write` → `cacheWrite`,
+  `tokens.output` → `output`); `cost` is summed into `costUsd` when the CLI reports it, and usage is
+  never invented — no `step_finish` means zeros;
+- it throws a clear error when the `opencode` binary is missing.
 
 ## Pricing
 
@@ -190,14 +195,17 @@ Assumptions and limitations (not exercised in this run — it needs a live model
 `usage.costUsd` unset and the report shows `n/a`. Cache-write tokens are billed at the input price
 (the endpoint reports one input tariff). Add entries to `PRICES` only with a citeable source.
 
-## Known contract friction (for the orchestrator)
+## Known contract gaps (for the orchestrator)
 
-1. **Arm selection** is not expressible in the frozen `ModelDriver` — see "Driver conventions".
-2. **ToolBox shapes** are now ratified in §4 and implemented exactly (including `edit`'s
+1. **Arm selection** is not expressible in the frozen `ModelDriver`; the harness makes the arms
+   distinguishable through the tool list and the prompt, and documents the informational marker
+   honestly — see "Driver conventions". A driver that ignores the marker entirely still works.
+2. **ToolBox shapes** are ratified in §4 and implemented exactly (including `edit`'s
    `find`/`replace` and `shell`'s `exitCode`); `oldString`/`newString` remain accepted aliases.
 3. **`ok` for arms B/C** means "the Code Mode program ran"; script-level failures are counted in
    `scriptFailures`. The frozen doc only says `ok` is "not the same as task correctness".
 4. **`scriptFailures`** is defined here as one point per failed execution plus parse-shaped
-   warnings; a single-call arm cannot observe a "model retry".
-5. **`createFakeJudge` answers** for real D2 tasks are unknown to the harness; missing ids escalate
-   loudly ("no usable answer") rather than being invented (see "Module resolution").
+   warnings; a single-call arm cannot observe a "model retry", so no retry is counted.
+5. **Fake-judge coverage**: the offline judge answers only scripted ids and throws otherwise, so
+   arm C needs `TaskDef.judgeAnswers` or `judgeScript`; the harness does not invent verdicts (see
+   "Module resolution").

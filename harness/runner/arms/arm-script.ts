@@ -35,7 +35,15 @@ export function extractScript(text: string, toolCalls: readonly { name: string; 
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
-/** The user prompt for a script arm. */
+/**
+ * The user prompt for a script arm.
+ *
+ * The arm-C sentence naming `tools.typesafe.decide({ state, questions })` is deliberately kept
+ * verbatim: besides teaching the model the path, it is the prompt signal a driver can use to tell
+ * arm C from arm B (arm B's prompt never mentions `decide`) — see `./context.ts` and the
+ * "Driver conventions" section of `harness/README.md`. Changing that path or its spelling changes
+ * how a driver detects arm C.
+ */
 export function scriptPrompt(arm: ArmID, ctx: ArmContext): string {
   const parts = [ctx.task.scriptPrompt];
   if (arm === "C") {

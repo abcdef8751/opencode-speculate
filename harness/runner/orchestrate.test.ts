@@ -4,8 +4,7 @@ import * as path from "node:path";
 import { runHarness } from "./orchestrate.ts";
 import { loadSources, describeOrigins, type Sources } from "./sources.ts";
 import { parseArmMarker } from "./arms/context.ts";
-import { createFakeJudge, createMockDriver, createOpenCodeCliDriver } from "./fallback/drivers.ts";
-import { createDecideRuntime } from "./fallback/decide-shim.ts";
+import { loadSources as loadReal } from "./sources.ts";
 import { cleanupTempDirs, replayDriver, response, tempDir, testTask, writeFiles } from "./testing.ts";
 import type { ModelDriver, TaskDef } from "../types.ts";
 
@@ -13,23 +12,23 @@ afterAll(cleanupTempDirs);
 
 const sources = await loadSources();
 
-/** Injected sources: a hermetic task + driver, independent of which modules are loaded. */
+/** Injected sources: a hermetic task + driver, wired to the real drivers/decide runtime. */
 function injectedSources(task: TaskDef, createMockDriverFor: () => ModelDriver, extra: Partial<Sources> = {}): Sources {
   return {
     tasks: [task],
     getTask: (id) => (id === task.id ? task : undefined),
     createMockDriver: createMockDriverFor,
-    createOpenCodeCliDriver,
-    createFakeJudge,
-    createDecideRuntime,
-    origin: { tasks: "fallback", drivers: "fallback", decide: "fallback" },
+    createOpenCodeCliDriver: sources.createOpenCodeCliDriver,
+    createFakeJudge: sources.createFakeJudge,
+    createDecideRuntime: sources.createDecideRuntime,
+    origin: { tasks: "module", drivers: "module", decide: "module" },
     warnings: [],
     ...extra,
   };
 }
 
 describe("module sources", () => {
-  test("expose the frozen surface, and every fallback use is announced", () => {
+  test("expose the frozen surface of the three real modules", () => {
     expect(sources.tasks.length).toBeGreaterThan(0);
     expect(sources.tasks.every((task) => typeof task.id === "string" && typeof task.verify === "function")).toBe(true);
     expect(typeof sources.getTask).toBe("function");
@@ -37,14 +36,30 @@ describe("module sources", () => {
     expect(typeof sources.createOpenCodeCliDriver).toBe("function");
     expect(typeof sources.createFakeJudge).toBe("function");
     expect(typeof sources.createDecideRuntime).toBe("function");
+    expect(describeOrigins(sources)).toBe("tasks=module drivers=module decide=module");
+    expect(sources.warnings).toEqual([]);
+  });
 
-    for (const key of ["tasks", "drivers", "decide"] as const) {
-      expect(["module", "fallback"]).toContain(sources.origin[key]);
-    }
-    expect(describeOrigins(sources)).toMatch(/^tasks=(module|fallback) drivers=(module|fallback) decide=(module|fallback)$/);
-    if (sources.origin.tasks === "fallback") {
-      expect(sources.warnings.join(" ")).toContain("harness/tasks/index.ts missing");
-    }
+  test("a genuinely missing module fails with an actionable error, and is never stood in for", async () => {
+    const notFound = Object.assign(new Error("Cannot find module '../tasks/index.ts'"), {
+      code: "ERR_MODULE_NOT_FOUND",
+    });
+    await expect(loadReal({ resolver: async () => Promise.reject(notFound) })).rejects.toThrow(
+      /missing \.\.\/tasks\/index\.ts \(owned by worker D2; must export `TASKS` \(array\) and `getTask\(id\)`\)/,
+    );
+    await expect(loadReal({ resolver: async () => Promise.reject(notFound) })).rejects.toThrow(
+      /runs only against the real modules/,
+    );
+  });
+
+  test("a module that exists but exports the wrong shape is a loud error too", async () => {
+    await expect(loadReal({ resolver: async () => ({}) })).rejects.toThrow(/must export `TASKS` as an array/);
+    await expect(
+      loadReal({
+        resolver: async (specifier) =>
+          specifier.includes("tasks") ? { TASKS: [], getTask: () => undefined } : {},
+      }),
+    ).rejects.toThrow(/must export a callable `createMockDriver`/);
   });
 });
 
@@ -58,7 +73,8 @@ describe("runHarness", () => {
       scriptPrompt: "write one script",
       verify: async (dir) => ({ passed: (await fs.readFile(path.join(dir, "in.txt"), "utf8")) === "seed" }),
     });
-    // One driver for all arms, choosing by the frozen arm-marker convention.
+    // One driver for all arms. It reads the informational `harness:arm=…` marker (the sandbox has
+    // no arm field on ModelDriver); a real driver would use the tool list + prompt instead.
     const driver: ModelDriver = {
       id: "hermetic-mock",
       async complete(req) {
@@ -87,6 +103,8 @@ describe("runHarness", () => {
       runs: 1,
       driverName: "mock",
       sources: injectedSources(task, () => driver),
+      // The real fake judge fails loud on unscripted question ids, so supply the answer arm C asks for.
+      judgeScript: { q1: { noul: 0.95, confidence: 0.9 } },
       outBase,
       scratchBase,
       stamp: "STAMP",
@@ -172,21 +190,14 @@ describe("runHarness", () => {
     const fixture = await tempDir();
     await writeFiles(fixture, { "counter.txt": "0" });
     const task: TaskDef = testTask({ id: "freshness", fixture, kind: "one-shot" });
-    const injected: Sources = {
-      tasks: [task],
-      getTask: (id) => (id === task.id ? task : undefined),
-      // arm A: edit counter.txt 0 -> 1, then stop. A stale (non-fresh) copy would make the edit
-      // fail, so `toolFailures === 0` proves each run got a pristine copy.
-      createMockDriver: () => replayDriver([
+    // arm A: edit counter.txt 0 -> 1, then stop. A stale (non-fresh) copy would make the edit
+    // fail, so `toolFailures === 0` proves each run got a pristine copy.
+    const injected = injectedSources(task, () =>
+      replayDriver([
         response("editing", [{ name: "edit", input: { path: "counter.txt", find: "0", replace: "1" } }]),
         response("done", []),
       ]),
-      createOpenCodeCliDriver,
-      createFakeJudge,
-      createDecideRuntime,
-      origin: { tasks: "fallback", drivers: "fallback", decide: "fallback" },
-      warnings: [],
-    };
+    );
 
     const scratchBase = await tempDir();
     const outcome = await runHarness({
@@ -227,23 +238,12 @@ describe("runHarness", () => {
   test("a broken fixture yields a failed result instead of crashing the run", async () => {
     const dir = await tempDir();
     const task: TaskDef = testTask({ id: "broken", fixture: path.join(dir, "does-not-exist") });
-    const injected: Sources = {
-      tasks: [task],
-      getTask: (id) => (id === task.id ? task : undefined),
-      createMockDriver,
-      createOpenCodeCliDriver,
-      createFakeJudge,
-      createDecideRuntime,
-      origin: { tasks: "fallback", drivers: "fallback", decide: "fallback" },
-      warnings: [],
-    };
-
     const outcome = await runHarness({
       taskIds: ["broken"],
       arms: ["A", "B"],
       runs: 1,
       driverName: "mock",
-      sources: injected,
+      sources: injectedSources(task, () => sources.createMockDriver()),
       outBase: await tempDir(),
       scratchBase: await tempDir(),
     });
@@ -278,23 +278,12 @@ describe("runHarness", () => {
       fixture: dir,
       verify: async (scratch) => ({ passed: (await fs.readFile(path.join(scratch, "seed.txt"), "utf8")) === "seed" }),
     });
-    const injected: Sources = {
-      tasks: [task],
-      getTask: (id) => (id === task.id ? task : undefined),
-      createMockDriver: () => replayDriver([response("nothing to do", [])]),
-      createOpenCodeCliDriver,
-      createFakeJudge,
-      createDecideRuntime,
-      origin: { tasks: "fallback", drivers: "fallback", decide: "fallback" },
-      warnings: [],
-    };
-
     const outcome = await runHarness({
       taskIds: ["local"],
       arms: ["A"],
       runs: 1,
       driverName: "mock",
-      sources: injected,
+      sources: injectedSources(task, () => replayDriver([response("nothing to do", [])])),
       outBase: await tempDir(),
       scratchBase: await tempDir(),
     });
