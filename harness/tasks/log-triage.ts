@@ -9,8 +9,8 @@
  * the artefact against constants derived from the committed fixture.
  */
 import { join } from "node:path";
-import type { TaskDef, TaskVerifyResult } from "../types.ts";
-import { fail, fileExists, jsonEqual, pass, readJson } from "./util.ts";
+import type { TaskVerifyResult } from "../types.ts";
+import { fail, fileExists, jsonEqual, pass, readJson, type TaskWithJudgeAnswers } from "./util.ts";
 
 /** Expected artefact; keep in sync with `harness/fixtures/log-corpus/logs/**`. */
 export const LOG_TRIAGE_EXPECTED = {
@@ -30,12 +30,19 @@ const SHAPE = [
   "`topCode` is the code with the highest count (fewer ties: highest count, then lexicographically smallest).",
 ];
 
-export const logTriage: TaskDef = {
+export const logTriage: TaskWithJudgeAnswers = {
   id: "log-triage",
   title: "Triage a small multi-file log corpus",
   kind: "long-loop",
   fixture: "harness/fixtures/log-corpus",
   tools: ["read", "grep", "glob", "write"],
+  /**
+   * Offline judge answers for the canned arm-C program (the runner reads this duck-typed hook).
+   * THIS is the task designed to escalate: `noul: 0.55` => confidence `|2p-1| = 0.1`, and the
+   * canned decide call passes `escalateBelow: 0.5`, so `d.escalate` is true and the program's
+   * `break` runs.
+   */
+  judgeAnswers: { actionable: { noul: 0.55, confidence: 0.9 } },
   prompt: [
     "You are working in a small service-log corpus under `logs/`.",
     "Read the logs under `logs/` and produce the error triage artefact described below.",

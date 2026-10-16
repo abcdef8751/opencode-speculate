@@ -5,8 +5,8 @@
  * the cheapest task in the set, and the baseline arm-A cost floor.
  */
 import { join } from "node:path";
-import type { TaskDef, TaskVerifyResult } from "../types.ts";
-import { fail, fileExists, jsonEqual, pass, readJson } from "./util.ts";
+import type { TaskVerifyResult } from "../types.ts";
+import { fail, fileExists, jsonEqual, pass, readJson, type TaskWithJudgeAnswers } from "./util.ts";
 
 /** Expected `config.json` after migration; keep in sync with `harness/fixtures/config-migrate`. */
 export const MIGRATE_CONFIG_EXPECTED = {
@@ -22,12 +22,14 @@ const SHAPE = [
   "The result must have exactly those three top-level keys: no `logLevel`, `retries` or `timeoutMs` at the top level.",
 ];
 
-export const migrateConfig: TaskDef = {
+export const migrateConfig: TaskWithJudgeAnswers = {
   id: "migrate-config",
   title: "Migrate a flat config to the grouped v2 shape",
   kind: "one-shot",
   fixture: "harness/fixtures/config-migrate",
   tools: ["read", "write"],
+  /** Offline judge answers for the canned arm-C program (non-escalating: no `escalateBelow`). */
+  judgeAnswers: { actionable: { noul: 0.95, confidence: 0.9 } },
   prompt: [
     "You are working in a tiny project whose configuration is out of date.",
     "`README.md` and `config.schema.md` describe the target shape.",

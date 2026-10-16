@@ -6,8 +6,15 @@
  * scratch copy — the model's transcript is never consulted.
  */
 import { join } from "node:path";
-import type { TaskDef, TaskVerifyResult } from "../types.ts";
-import { describeScriptFailure, fail, fileExists, pass, runBunScript } from "./util.ts";
+import type { TaskVerifyResult } from "../types.ts";
+import {
+  describeScriptFailure,
+  fail,
+  fileExists,
+  pass,
+  runBunScript,
+  type TaskWithJudgeAnswers,
+} from "./util.ts";
 
 const SHARED_RULES = [
   "Work only inside the current directory; do not reach outside it.",
@@ -15,12 +22,14 @@ const SHARED_RULES = [
   "When you are done, `bun check.mjs` must exit 0.",
 ];
 
-export const fixMedian: TaskDef = {
+export const fixMedian: TaskWithJudgeAnswers = {
   id: "fix-median",
   title: "Fix the failing statistics check",
   kind: "medium",
   fixture: "harness/fixtures/buggy-stats",
   tools: ["read", "grep", "glob", "edit", "write", "shell"],
+  /** Offline judge answers for the canned arm-C program (non-escalating: no `escalateBelow`). */
+  judgeAnswers: { actionable: { noul: 0.95, confidence: 0.9 } },
   prompt: [
     "You are working in a small JavaScript project.",
     "`bun check.mjs` currently fails.",

@@ -7,8 +7,8 @@
  * the plural word `TODOS` (which must not count as a `TODO` token).
  */
 import { join } from "node:path";
-import type { TaskDef, TaskVerifyResult } from "../types.ts";
-import { fail, fileExists, jsonEqual, pass, readJson } from "./util.ts";
+import type { TaskVerifyResult } from "../types.ts";
+import { fail, fileExists, jsonEqual, pass, readJson, type TaskWithJudgeAnswers } from "./util.ts";
 
 /** Expected artefact; keep in sync with `harness/fixtures/service-tree/src/**`. */
 export const DEPRECATED_AUDIT_EXPECTED = {
@@ -36,12 +36,14 @@ const SHAPE = [
   "`topTodo` is the file with the highest count (ties: lexicographically smallest).",
 ];
 
-export const deprecatedAudit: TaskDef = {
+export const deprecatedAudit: TaskWithJudgeAnswers = {
   id: "deprecated-audit",
   title: "Audit deprecated modules and TODO markers",
   kind: "long-loop",
   fixture: "harness/fixtures/service-tree",
   tools: ["read", "grep", "glob", "write"],
+  /** Offline judge answers for the canned arm-C program (non-escalating: no `escalateBelow`). */
+  judgeAnswers: { actionable: { noul: 0.95, confidence: 0.9 } },
   prompt: [
     "You are working in a tree of small service modules under `src/`.",
     "Inspect every module and produce the audit artefact described below.",
