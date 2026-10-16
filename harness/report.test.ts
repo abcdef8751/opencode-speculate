@@ -75,6 +75,12 @@ describe("report", () => {
     expect(renderMarkdown(report("opencode"))).not.toContain("Synthetic usage");
   });
 
+  test("the gate caveat travels with the verdict in the markdown gate section", () => {
+    const sections = (md: string) => md.slice(md.indexOf("## Gate"), md.indexOf("## Runs"));
+    expect(sections(renderMarkdown(report("mock")))).toContain("SYNTHETIC NUMBERS");
+    expect(sections(renderMarkdown(report("opencode")))).not.toContain("SYNTHETIC NUMBERS");
+  });
+
   test("serialiseReport round-trips through JSON", () => {
     const original = report("mock");
     const parsed = JSON.parse(serialiseReport(original)) as RunReport;

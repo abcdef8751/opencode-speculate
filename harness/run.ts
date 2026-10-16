@@ -12,8 +12,7 @@
  */
 
 import type { ArmID } from "./types.ts";
-import { ARM_IDS, evaluateGate } from "./metrics/index.ts";
-import { isMockDriver } from "./report.ts";
+import { ARM_IDS, evaluateGate, isMockDriver } from "./metrics/index.ts";
 import { runHarness } from "./runner/orchestrate.ts";
 import { loadSources } from "./runner/sources.ts";
 
@@ -208,7 +207,7 @@ async function main(): Promise<number> {
     );
   }
 
-  const gate = evaluateGate(report.summary);
+  const gate = evaluateGate(report.summary, { driver: report.driver });
   console.log("");
   console.log(`gate: ${gate.pass ? "PASS" : "FAIL"}`);
   for (const note of gate.notes) console.log(`  - ${note}`);

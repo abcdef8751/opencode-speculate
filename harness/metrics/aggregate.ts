@@ -76,16 +76,40 @@ export function summariseByArm(results: readonly ArmResult[]): Record<ArmID, Arm
 export interface GateOptions {
   /** Maximum tolerated escalation rate in arm C. Default 0.25. */
   maxEscalationRate?: number;
+  /**
+   * Driver provenance from the run (`RunReport.driver`). When it names the mock driver the verdict
+   * carries a "SYNTHETIC NUMBERS" note, so the caveat travels with the number people quote.
+   */
+  driver?: string | undefined;
+}
+
+/**
+ * True when the driver's token accounting is canned rather than measured. Lives here (not in
+ * `../report.ts`) so the gate can flag synthetic runs without a module cycle; `report.ts` re-exports
+ * it as `isMockDriver` for the CLI and the report banner.
+ */
+export function isMockDriver(driver: string | undefined): boolean {
+  return driver !== undefined && driver.toLowerCase().includes("mock");
 }
 
 /**
  * Evaluates the plan's gate:
  *   - cache-read tokens down in C vs A (the hypothesis);
  *   - correctness equal-or-better in C vs every other arm;
- *   - escalation rate in C low.
+ *   - escalation rate in C low;
+ *   - **the baseline must be trustworthy**: arm A runs cannot have harness-level errors, and arm C
+ *     must have produced at least one successful run.
+ *
+ * The health rule exists because `correctnessEqualOrBetter` compares *rates*: a broken arm A
+ * (correctness 0, or aborted mid-loop so its cache reads are undercounted) trivially satisfies
+ * `cRate >= aRate` and could let C post a lower mean. `pass` therefore requires `A.ok === A.runs`
+ * and `C.ok > 0`; any arm with harness-level errors is called out in `notes`.
  *
  * `cacheReadDownVsB` is reported as well (it says whether the *decide* lever on top of the script
  * costs cache reads), but it is not part of `pass` — the gate names the A baseline.
+ *
+ * Pass `driver` (e.g. `RunReport.driver`) so a synthetic mock run carries its caveat *inside* the
+ * verdict: the value people quote must not be quotable without it.
  */
 export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptions = {}): GateVerdict {
   const maxEscalationRate = opts.maxEscalationRate ?? 0.25;
@@ -93,6 +117,13 @@ export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptio
   const b = summary.B;
   const c = summary.C;
   const notes: string[] = [];
+  const synthetic = isMockDriver(opts.driver);
+
+  if (synthetic) {
+    notes.push(
+      `SYNTHETIC NUMBERS (driver "${opts.driver}"): token counts are canned, not measured — this verdict is plumbing evidence, not a result`,
+    );
+  }
 
   const cacheReadDownVsA = c.cacheReadTokensMean < a.cacheReadTokensMean;
   const cacheReadDownVsB = c.cacheReadTokensMean < b.cacheReadTokensMean;
@@ -105,10 +136,34 @@ export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptio
 
   const escalationLow = c.escalationRate <= maxEscalationRate;
 
+  // Health: the baseline mean is only a baseline when every A run finished; C needs evidence.
+  const baselineHealthy = a.runs > 0 && a.ok === a.runs;
+  const challengerHasEvidence = c.ok > 0;
+  const errors = ([
+    ["A", a],
+    ["B", b],
+    ["C", c],
+  ] as const)
+    .filter(([, s]) => s.runs > 0 && s.ok < s.runs)
+    .map(([arm, s]) => `${arm}=${s.ok}/${s.runs}`);
+
   notes.push(
     `cache-read tokens/run: A=${a.cacheReadTokensMean.toFixed(1)} B=${b.cacheReadTokensMean.toFixed(1)} C=${c.cacheReadTokensMean.toFixed(1)}`,
   );
   if (c.runs === 0) notes.push("arm C produced no runs — gate cannot be satisfied");
+  if (errors.length > 0) {
+    notes.push(`harness-level errors (ok/runs): ${errors.join(" ")} — means include failed runs`);
+  }
+  if (!baselineHealthy) {
+    notes.push(
+      a.runs === 0
+        ? "baseline arm A produced no runs — its cache-read mean cannot be a baseline"
+        : `baseline arm A is not healthy (ok=${a.ok}/${a.runs}); its cache-read mean is not a trustworthy baseline — gate cannot pass`,
+    );
+  }
+  if (!challengerHasEvidence) {
+    notes.push("arm C has no successful run — there is no evidence for a win");
+  }
   notes.push(`correctness pass rate: A=${aRate.toFixed(2)} B=${bRate.toFixed(2)} C=${cRate.toFixed(2)}`);
   notes.push(`escalation rate (C)=${c.escalationRate.toFixed(2)} (max ${maxEscalationRate})`);
   if (cacheReadDownVsB) {
@@ -117,9 +172,10 @@ export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptio
     notes.push("decide did not lower cache reads vs the script-only arm B (informational, not gating)");
   }
   if (a.runs > 0 && a.cacheReadTokensMean === 0 && c.cacheReadTokensMean === 0) {
-    notes.push("both A and C report zero cache reads — with `--driver mock` these are synthetic numbers");
+    notes.push("both A and C report zero cache reads — these are synthetic numbers, not a measurement");
   }
 
-  const pass = cacheReadDownVsA && correctnessEqualOrBetter && escalationLow && c.runs > 0;
+  const pass =
+    cacheReadDownVsA && correctnessEqualOrBetter && escalationLow && c.runs > 0 && baselineHealthy && challengerHasEvidence;
   return { cacheReadDownVsA, cacheReadDownVsB, correctnessEqualOrBetter, escalationLow, pass, notes };
 }
