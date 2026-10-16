@@ -1,0 +1,6 @@
+{
+  "logLevel": "debug",
+  "retries": 3,
+  "timeoutMs": 1500,
+  "features": ["cache", "metrics"]
+}

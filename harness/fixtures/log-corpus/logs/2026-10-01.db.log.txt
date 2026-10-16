@@ -1,0 +1,4 @@
+2026-10-01T09:00:01Z INFO  svc=db code=- msg=pool warm
+2026-10-01T09:00:02Z ERROR code=E204 svc=db msg=deadlock detected
+2026-10-01T09:00:03Z ERROR code=E204 svc=db msg=deadlock detected
+2026-10-01T09:00:04Z ERROR code=E204 svc=db msg=statement timeout

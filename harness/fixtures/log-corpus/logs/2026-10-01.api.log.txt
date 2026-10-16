@@ -1,0 +1,8 @@
+2026-10-01T08:00:01Z INFO  svc=api code=- msg=started
+2026-10-01T08:00:02Z ERROR code=E100 svc=api msg=upstream returned 500
+2026-10-01T08:00:03Z ERROR code=E100 svc=api msg=upstream returned 502
+2026-10-01T08:00:04Z INFO  svc=api code=- msg=health ok
+2026-10-01T08:00:05Z ERROR code=E100 svc=api msg=upstream returned 503
+2026-10-01T08:00:06Z ERROR code=E100 svc=api msg=upstream returned 500
+2026-10-01T08:00:07Z ERROR code=E100 svc=api msg=upstream returned 504
+2026-10-01T08:00:08Z ERROR code=E100 svc=api msg=upstream returned 500

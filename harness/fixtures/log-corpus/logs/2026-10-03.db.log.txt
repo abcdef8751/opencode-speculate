@@ -1,0 +1,2 @@
+2026-10-03T09:30:01Z ERROR code=E204 svc=db msg=deadlock detected
+2026-10-03T09:30:02Z ERROR code=E204 svc=db msg=statement timeout

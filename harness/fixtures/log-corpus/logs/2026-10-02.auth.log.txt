@@ -1,0 +1,4 @@
+2026-10-02T11:20:01Z ERROR code=E401 svc=auth msg=token expired
+2026-10-02T11:20:02Z ERROR code=E401 svc=auth msg=token expired
+2026-10-02T11:20:03Z ERROR code=E401 svc=auth msg=signature mismatch
+2026-10-02T11:20:04Z ERROR code=E401 svc=auth msg=signature mismatch

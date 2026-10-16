@@ -1,0 +1,5 @@
+2026-10-04T10:40:01Z ERROR code=E104 svc=worker msg=job 77 exhausted retries
+2026-10-04T10:40:02Z ERROR code=E104 svc=worker msg=job 78 exhausted retries
+2026-10-04T10:40:03Z ERROR code=E104 svc=worker msg=job 79 exhausted retries
+2026-10-04T10:40:04Z ERROR code=E104 svc=worker msg=job 80 exhausted retries
+2026-10-04T10:40:05Z ERROR code=E104 svc=worker msg=job 81 exhausted retries
