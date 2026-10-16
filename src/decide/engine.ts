@@ -388,13 +388,12 @@ export interface VerdictContext {
   threshold?: number | undefined
 }
 
-/** Assemble the full `DecideVerdict` (value + confidence + escalation) for one question. */
-export function assembleVerdict(
+/** Assemble a `DecideVerdict` from already-derived facts (shared by fresh and cached paths). */
+function assembleVerdictFromFacts(
   question: DecideQuestion,
-  answer: SystemOneAnswer | undefined,
+  facts: VerdictFacts,
   ctx: VerdictContext,
 ): DecideVerdict {
-  const facts = verdictFacts(question, answer)
   const { escalate, reason } = escalationFor({
     confidence: facts.confidence,
     threshold: ctx.threshold,
@@ -414,6 +413,15 @@ export function assembleVerdict(
   if (facts.probabilities !== undefined) verdict.probabilities = facts.probabilities
   if (reason !== undefined) verdict.reason = reason
   return verdict
+}
+
+/** Assemble the full `DecideVerdict` (value + confidence + escalation) for one question. */
+export function assembleVerdict(
+  question: DecideQuestion,
+  answer: SystemOneAnswer | undefined,
+  ctx: VerdictContext,
+): DecideVerdict {
+  return assembleVerdictFromFacts(question, verdictFacts(question, answer), ctx)
 }
 
 /* ------------------------------------------------------------------ *
@@ -532,16 +540,37 @@ export async function runDecide(
   const single = !Array.isArray(call.questions)
   const useCache = call.cache !== false
 
-  // 1. Cache lookups (best-effort: a storage failure degrades to a miss).
+  // 1. Cache lookups (best-effort: a storage failure degrades to a miss). A stored entry is only
+  // trusted when it is structurally valid AND belongs to this exact question — a stale/foreign
+  // entry is a miss. Escalation is ALWAYS recomputed from the stored `confidence` and the
+  // *current* effective threshold: the call-level `escalateBelow` is not part of the cache key, so
+  // the stored `escalate`/`reason` may be stale.
   const hits = new Map<string, DecideVerdict>()
   if (useCache) {
     for (const question of questions) {
       const key = decideCacheKey(hash, call.state, question)
       try {
         const stored = parseCachedVerdict(await deps.storage.get(key))
-        if (stored !== undefined) {
-          hits.set(question.id, { ...stored, latencyMs: 0, cached: true })
+        if (stored === undefined) continue
+        if (stored.id !== question.id || stored.mode !== question.mode) continue
+        const escalation = escalationFor({
+          confidence: stored.confidence,
+          threshold: effectiveThreshold(question, call),
+        })
+        const hit: DecideVerdict = {
+          id: stored.id,
+          mode: stored.mode,
+          value: stored.value,
+          confidence: stored.confidence,
+          modelId: stored.modelId,
+          latencyMs: 0,
+          cached: true,
+          escalate: escalation.escalate,
         }
+        if (stored.p !== undefined) hit.p = stored.p
+        if (stored.probabilities !== undefined) hit.probabilities = stored.probabilities
+        if (escalation.reason !== undefined) hit.reason = escalation.reason
+        hits.set(question.id, hit)
       } catch {
         // Treat as a miss.
       }
@@ -587,13 +616,17 @@ export async function runDecide(
     usage = normalizeUsage(result.usage)
 
     for (const question of misses) {
-      const verdict = assembleVerdict(question, result.answers[question.id], {
+      const facts = verdictFacts(question, result.answers[question.id])
+      const verdict = assembleVerdictFromFacts(question, facts, {
         modelId,
         latencyMs,
         threshold: effectiveThreshold(question, call),
       })
       fresh.set(question.id, verdict)
-      if (useCache) {
+      // Only trustworthy verdicts are cached. An unusable/missing answer escalates on every call,
+      // and because a hit recomputes escalation from `confidence` alone it would lose that
+      // escalation — so its placeholder value must never be replayed from the cache.
+      if (useCache && facts.unusable === undefined) {
         const key = decideCacheKey(hash, call.state, question)
         try {
           await deps.storage.set(key, toCachedVerdict(verdict) as unknown as Json)
@@ -614,17 +647,20 @@ export async function runDecide(
     throw new Error(`decide: internal error — no verdict assembled for "${id}"`)
   })
 
-  // 4. One decision-log entry per call (never throws into the caller path).
-  const entry: Json = {
-    at: startedAt,
-    modelId,
-    latencyMs,
-    cached: misses.length === 0,
-    questionIds: order,
-    verdicts,
-    usage,
-  } as unknown as Json
-  await safeLog(deps.log, entry)
+  // 4. One decision-log entry per Jev request (§1). A batch served entirely from cache issues no
+  // request, so it emits no entry. Never throws into the caller path.
+  if (misses.length > 0) {
+    const entry: Json = {
+      at: startedAt,
+      modelId,
+      latencyMs,
+      cached: false,
+      questionIds: order,
+      verdicts,
+      usage,
+    } as unknown as Json
+    await safeLog(deps.log, entry)
+  }
 
   if (single) {
     const verdict = verdicts[0]
