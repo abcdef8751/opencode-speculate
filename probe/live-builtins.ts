@@ -69,12 +69,26 @@ export interface CatalogEntry {
   optionKeys: string[]
 }
 
+export type CatalogViewName = "ctx.tool.list()" | "transform-post" | "transform-pre"
+
+/** One catalog view the record holds; `entries: null` = the probe never captured it. */
+export interface CatalogView {
+  name: CatalogViewName
+  entries: CatalogEntry[] | null
+}
+
 export interface DecideResolution {
+  /** True only when a `decide`-shaped tool was actually seen in some view. */
   found: boolean
   id?: string
   namespace?: unknown
   /** `tools.typesafe.decide` when namespaced, else `tools.decide`. */
   codeModePath?: string
+  /** Which catalog view the match came from (when found). */
+  source?: CatalogViewName
+  /** Every view the probe consulted, with entry counts (`null` = not captured). */
+  checked?: { view: CatalogViewName; entries: number | null }[]
+  /** Human sentence. When `found` is false this says *unknown*, never a cause. */
   note: string
 }
 
@@ -143,23 +157,107 @@ export function readCatalog(source: {
   })
 }
 
-/** Resolve the effective Code Mode path of `decide` from the catalog. */
-export function resolveDecidePath(entries: CatalogEntry[]): DecideResolution {
-  const match = entries.find((e) => e.id === "decide" || e.id.endsWith("/decide"))
-  if (match === undefined) {
-    return {
-      found: false,
-      note: "decide tool not in the catalog — the main plugin (src/index.ts) is not loaded in this host.",
+/**
+ * The tool leaf name for a catalog entry, stripping a leading `<namespace>` prefix
+ * in whichever separator the host used (`typesafe_decide`, `typesafe.decide`,
+ * `typesafe/decide` → all `decide`).
+ */
+function toolLeaf(entry: CatalogEntry): string {
+  const ns = typeof entry.namespace === "string" && entry.namespace.length > 0 ? entry.namespace : undefined
+  if (ns !== undefined) {
+    for (const sep of ["_", ".", "/"]) {
+      const prefix = ns + sep
+      if (entry.id.startsWith(prefix)) return entry.id.slice(prefix.length)
     }
   }
-  const ns = typeof match.namespace === "string" && match.namespace.length > 0 ? match.namespace : undefined
+  return entry.id
+}
+
+/**
+ * Is this catalog entry the `decide` tool? Accepts every id spelling the host has
+ * been seen to use: bare `decide`, `<ns>_decide`, `<ns>.decide`, `<ns>/decide`.
+ * Do not hardcode a single spelling.
+ */
+function isDecideEntry(entry: CatalogEntry): boolean {
+  if (toolLeaf(entry) === "decide") return true
+  const lastSegment = entry.id.split(/[_./]/).pop()
+  return lastSegment === "decide"
+}
+
+/** Pick the best `decide` match (prefer the `typesafe` namespace) from one view. */
+function findDecideEntry(entries: CatalogEntry[]): CatalogEntry | undefined {
+  const matches = entries.filter(isDecideEntry)
+  if (matches.length === 0) return undefined
+  return (
+    matches.find((e) => e.namespace === "typesafe") ??
+    matches.find((e) => typeof e.namespace === "string" && e.namespace.length > 0) ??
+    matches[0]
+  )
+}
+
+function describeDecide(
+  entry: CatalogEntry,
+  source: CatalogViewName,
+  checked: { view: CatalogViewName; entries: number | null }[],
+): DecideResolution {
+  const ns = typeof entry.namespace === "string" && entry.namespace.length > 0 ? entry.namespace : undefined
+  const codeModePath = ns === undefined ? "tools.decide" : `tools.${ns}.decide`
   return {
     found: true,
-    id: match.id,
-    namespace: match.namespace,
-    codeModePath: ns === undefined ? "tools.decide" : `tools.${ns}.decide`,
-    note: ns === undefined ? "no namespace → call it as tools.decide" : `namespace "${ns}" → call it as tools.${ns}.decide`,
+    id: entry.id,
+    namespace: entry.namespace,
+    codeModePath,
+    source,
+    checked,
+    note: `matched catalog id "${entry.id}"${ns === undefined ? "" : ` (namespace "${ns}")`} in the ${source} view → call it as ${codeModePath}`,
   }
+}
+
+function unknownDecideNote(checked: { view: CatalogViewName; entries: number | null }[]): string {
+  const listed = checked
+    .map((c) => `${c.view}: ${c.entries === null ? "not captured" : `${c.entries} entries`}`)
+    .join("; ")
+  return (
+    "not visible in any catalog view the probe could read " +
+    `(${listed}). The probe cannot tell whether it is absent or was registered after its snapshots — unknown, not a finding.`
+  )
+}
+
+/** Resolve the effective Code Mode path of `decide` from one catalog view. */
+export function resolveDecidePath(entries: CatalogEntry[], source: CatalogViewName = "transform-post"): DecideResolution {
+  const match = findDecideEntry(entries)
+  if (match === undefined) {
+    return { found: false, note: unknownDecideNote([{ view: source, entries: entries.length }]) }
+  }
+  return describeDecide(match, source, [{ view: source, entries: entries.length }])
+}
+
+/** The catalog views a record holds, most complete first. */
+export function decideViews(state: ProbeState): CatalogView[] {
+  const ran = state.transform.runs > 0
+  return [
+    { name: "ctx.tool.list()", entries: state.catalogAfterTransforms?.entries ?? null },
+    { name: "transform-post", entries: ran ? state.transform.post : null },
+    { name: "transform-pre", entries: ran ? state.transform.pre : null },
+  ]
+}
+
+/**
+ * Resolve `decide` from every view the record has, most complete first. A tool
+ * registered by another plugin's transform can be missing from the probe's
+ * transform-time snapshots while still live (the exact false-negative this fixes),
+ * so we only report `found: false` after checking *all* views — and then only as
+ * "unknown", never as a cause.
+ */
+export function resolveDecide(views: CatalogView[]): DecideResolution {
+  const checked: { view: CatalogViewName; entries: number | null }[] = []
+  for (const view of views) {
+    checked.push({ view: view.name, entries: view.entries === null ? null : view.entries.length })
+    if (view.entries === null) continue
+    const match = findDecideEntry(view.entries)
+    if (match !== undefined) return describeDecide(match, view.name, checked)
+  }
+  return { found: false, checked, note: unknownDecideNote(checked) }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +292,15 @@ function persist(): Promise<void> {
       console.error(`[${PROBE_PLUGIN_ID}] could not write ${PROBE_STATE_PATH}: ${String(error)}`)
     })
   return writeChain
+}
+
+/**
+ * Recompute `decide` from *all* views captured so far. Called after each
+ * transform and after the `ctx.tool.list()` snapshot, so the record reflects the
+ * most complete view rather than whichever transform happened to run first.
+ */
+function refreshDecide(): void {
+  state.decide = resolveDecide(decideViews(state))
 }
 
 /**
@@ -236,7 +343,7 @@ const plugin: Plugin.Plugin = {
       const report = enableBuiltinsForCodeMode(view, { enabled: true, ids: BUILTIN_FILE_SHELL_IDS })
       const post = readCatalog(view)
       state.transform = { runs: state.transform.runs + 1, lastRunAt: nowIso(), pre, post, report }
-      state.decide = resolveDecidePath(post)
+      refreshDecide()
       console.log(
         `[${PROBE_PLUGIN_ID}] transform run #${state.transform.runs}: flipped=[${report.flipped.join(",")}] already=[${report.already.join(",")}] skipped=[${report.skipped.map((s) => s.id).join(",")}]`,
       )
@@ -252,6 +359,7 @@ const plugin: Plugin.Plugin = {
             at: nowIso(),
             entries: readCatalog({ list: () => tools as readonly { id: string; options?: unknown }[] }),
           }
+          refreshDecide()
           return persist()
         })
         .catch(() => {})
@@ -431,26 +539,44 @@ function printReport(state: ProbeState): void {
       console.log(`  of the six, still direct: [${sample.builtinsPresent.join(", ")}]`)
     }
     console.log("")
-    const everPresent = new Set(state.directLists.flatMap((s) => s.builtinsPresent))
-    if (everPresent.size === 0) {
-      console.log("INTERPRETATION: none of the six appeared on the direct list → flipping codemode REMOVES them")
-      console.log("from the native list (either/or). Code Mode is now the only path to them.")
+    const informative = state.directLists.filter((s) => s.tools.length > 0)
+    if (informative.length === 0) {
+      console.log("UNKNOWN — every recorded request exposed an empty direct tool list, so the probe cannot")
+      console.log("tell whether the six were removed from the native list or simply not visible from this hook.")
     } else {
-      console.log(`INTERPRETATION: still direct: [${[...everPresent].join(", ")}] → they COEXIST (native + sandbox).`)
+      const everPresent = new Set(informative.flatMap((s) => s.builtinsPresent))
+      console.log(`(using the ${informative.length} of ${state.directLists.length} request(s) that exposed a non-empty tool list)`)
+      if (everPresent.size === 0) {
+        console.log("INTERPRETATION: across those requests none of the six appeared on the direct list →")
+        console.log("consistent with codemode REMOVING them from the native list (either/or).")
+      } else {
+        console.log(`INTERPRETATION: still direct: [${[...everPresent].join(", ")}] → they COEXIST (native + sandbox).`)
+      }
+      console.log("Cross-check by eye in the TUI: for the ids reported absent, the tool picker should not list them.")
     }
-    console.log("Cross-check by eye in the TUI: the tool picker / a request should no longer list the ones reported gone.")
   }
 
+  // Recompute from every view in the record: a tool added by another plugin's
+  // transform can be missing from our transform-time snapshots while still live.
+  const decide = resolveDecide(decideViews(state))
   renderSection("(4) effective Code Mode path of decide", "[AUTOMATED]")
-  if (state.decide === null || !state.decide.found) {
-    console.log(state.decide?.note ?? "decide not found in the catalog.")
+  if (!decide.found) {
+    console.log("UNKNOWN — decide is not visible from any catalog view this probe captured.")
     console.log("")
-    console.log("Load the main plugin (src/index.ts) alongside this probe, restart, and re-run.")
+    console.log("views checked:")
+    for (const c of decide.checked ?? []) {
+      console.log(`  - ${c.view}: ${c.entries === null ? "not captured" : `${c.entries} entries`}`)
+    }
+    console.log("")
+    console.log("This is NOT evidence that a plugin is missing: a tool added by another plugin's")
+    console.log("transform can be absent from the probe's snapshots while still live in Code Mode.")
+    console.log("The probe cannot establish the cause from what it recorded.")
   } else {
-    console.log(`id: ${state.decide.id}`)
-    console.log(`namespace: ${state.decide.namespace === undefined ? "(none)" : String(state.decide.namespace)}`)
-    console.log(`→ call it as: ${state.decide.codeModePath}`)
-    console.log(`note: ${state.decide.note}`)
+    console.log(`id: ${decide.id}`)
+    console.log(`namespace: ${decide.namespace === undefined ? "(none)" : String(decide.namespace)}`)
+    console.log(`seen in: ${decide.source}`)
+    console.log(`→ call it as: ${decide.codeModePath}`)
+    console.log(`note: ${decide.note}`)
   }
   console.log("")
   console.log("HUMAN confirmation: in a Code Mode script, `typeof tools.X.decide` lies; only calling reveals")
@@ -464,7 +590,7 @@ function printReport(state: ProbeState): void {
     console.log("")
     console.log("HUMAN step (does NOT call a model — it runs inside an existing session's Code Mode sandbox):")
     console.log("  In a session with this plugin loaded, run a Code Mode script such as:")
-    console.log("    const r = await tools.read({ filePath: \"/tmp/opencode/probe-read.txt\" })")
+    console.log("    const r = await tools.read({ path: \"/tmp/opencode/probe-read.txt\" })")
     console.log("    return r")
     console.log("  (create that file first, e.g. `echo probe > /tmp/opencode/probe-read.txt`).")
     console.log("  If the agent's permission mode asks for shell/read approval, the prompt appearing is the answer.")
@@ -473,8 +599,9 @@ function printReport(state: ProbeState): void {
     console.log(`read calls seen in the host's tool pipeline: ${sandboxReads.length}`)
     for (const call of readCalls.slice(-10)) console.log(`  ${call.at} ${call.phase} agent=${call.agent} status=${call.status ?? "-"}`)
     console.log("")
-    console.log("INTERPRETATION: a `read` execute.before/after here means the nested sandbox call still runs through")
-    console.log("the captured tool, so leaf permission checks still fire. Whether the approval PROMPT appears is")
+    console.log("INTERPRETATION: a `read` execute.before/after shows a read call reached the host's tool pipeline.")
+    console.log("This record alone cannot say whether it came from inside the sandbox or from a direct call —")
+    console.log("but a sandbox call does not bypass the pipeline. Whether the approval PROMPT appears is")
     console.log("HUMAN-observed in the TUI at the moment the script runs.")
   }
 
@@ -487,7 +614,7 @@ function printReport(state: ProbeState): void {
   const incomplete: string[] = []
   if (state.transform.runs === 0) incomplete.push("(1)(2) tool transform never ran")
   if (state.directLists.length === 0) incomplete.push("(3) direct tool list not observed (send a message)")
-  if (state.decide === null || !state.decide.found) incomplete.push("(4) decide tool not loaded")
+  if (!decide.found) incomplete.push("(4) decide path unknown — not visible in any catalog view the probe read")
   if (sandboxReads.length === 0) incomplete.push("(5) nested read not run")
   console.log("")
   if (incomplete.length === 0) {
