@@ -221,6 +221,24 @@ describe("runHarness", () => {
     }
   });
 
+  test("the default arm-A budget clears the longest real plan (no mid-task truncation)", async () => {
+    // `rename-symbol` is the long-loop task with the largest arm-A plan; a budget below it cuts the
+    // loop off mid-task and undercounts arm A's turns *and* cache reads.
+    const outcome = await runHarness({
+      taskIds: ["rename-symbol"],
+      arms: ["A"],
+      runs: 1,
+      driverName: "mock",
+      sources,
+      outBase: await tempDir(),
+      scratchBase: await tempDir(),
+    });
+    const armA = outcome.report.results[0]!;
+    expect(armA.ok).toBe(true);
+    expect(armA.notes.join(" ")).not.toContain("stopped at maxTurns");
+    expect(armA.correctness.passed).toBe(true);
+  });
+
   test("an unknown task is a loud error", async () => {
     await expect(
       runHarness({

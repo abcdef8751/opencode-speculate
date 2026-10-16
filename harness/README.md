@@ -18,7 +18,7 @@ bun run harness --tasks <id> --arms A,B,C --runs 1 --driver mock
 ```
 
 Flags: `--tasks <id[,id...]>`, `--arms <A,B,C>`, `--runs <n>`, `--driver mock|opencode`,
-`--max-turns <n>` (arm A budget, default 12), `--seed <n>`, `--out <dir>` (default `out`),
+`--max-turns <n>` (arm A budget, default 24), `--seed <n>`, `--out <dir>` (default `out`),
 `--keep-scratch`, `--help`. `--driver mock` is the default and is **fully offline**.
 
 Output: `out/<stamp>/report.json` (the frozen `RunReport`) and `out/<stamp>/report.md`
@@ -35,6 +35,11 @@ module loader). `bun run typecheck` covers everything.
 | **A** — direct loop | `ModelDriver.complete()` in a loop; every returned `toolCalls[]` is executed via `ToolBox.call()` and appended as a `tool` message; stops on a turn with no tool calls, or at `maxTurns`. | one per `complete()` |
 | **B** — script | **one** model call producing one Code Mode program, executed by `CodeMode.make({tools}).execute(code)` over the same `ToolBox`. | 1 |
 | **C** — script + decide | same as B, plus `tools.typesafe.decide` registered via `createDecideRuntime({ judge, storage, log })` (§1), with the task's `escalationPrompt` appended. Real `Judge` when a key is configured **and the driver is not `mock`**; otherwise the offline fake judge. | 1 |
+
+Arm A's turn budget is `maxTurns` (`DEFAULT_MAX_TURNS`, `--max-turns` override). The budget must
+clear the longest task's plan: cutting arm A off mid-task undercounts its turns *and* its cache
+reads, i.e. it flatters the script arms for the exact quantity being measured. The default is 24 —
+above the longest known plan (`rename-symbol`, 19 turns) while still a real bound.
 
 Each (task, run, arm) gets its own **fresh scratch directory** — a copy of `TaskDef.fixture`, then
 `TaskDef.setup?.(dir)`. Scratch lives under `/tmp/opencode/harness-runs/<stamp>/<task>/run-<n>/<arm>`

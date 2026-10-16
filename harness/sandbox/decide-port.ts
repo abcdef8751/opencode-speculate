@@ -1,11 +1,11 @@
 /**
  * Structural mirrors of the frozen `decide` contract (`docs/CONTRACTS.md` §1).
  *
- * Worker D1 must not depend on `src/decide/index.ts` existing in its worktree (worker A owns that
- * file and it may not be merged yet), yet it has to type the seam. These declarations are
- * *structural mirrors* of §1 — same names, same shapes — used for the injected factory seam and for
- * the offline dev shim in `../runner/fallback/`. When the real module is present the loader
- * (`../runner/sources.ts`) prefers it and asserts a runtime shape check.
+ * The harness types the decide seam without importing `src/decide/index.ts` directly, so that
+ * `harness/runner/**` and the sandbox stay decoupled from worker A's module layout (and so tests
+ * can inject a stub). These declarations are *structural mirrors* of §1 — same names, same shapes —
+ * used for the injected factory seam and by the harness's arm-C wiring; the real types live in
+ * `src/decide/index.ts` (§1), and `../runner/sources.ts` loads that module and asserts its shape.
  *
  * If §1 changes, update this file — do NOT change the contract.
  */

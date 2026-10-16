@@ -9,7 +9,17 @@ import type { Json } from "../types.ts";
 import type { ArmID, ArmResult, DecideCallRecord, TokenUsage } from "../types.ts";
 import type { DecideLogEntry } from "../sandbox/decide-port.ts";
 
-export const DEFAULT_MAX_TURNS = 12;
+/**
+ * Default arm-A turn budget: a real bound, but enough headroom that no known canned plan is cut
+ * off mid-task. Truncating arm A undercounts its turns **and** its cache reads, which biases the
+ * very quantity the harness measures (and biases it in favour of the script arms). The longest
+ * known arm-A plan (`rename-symbol`: 5 discovery calls + 13 file writes + the final turn = 19)
+ * needs 19; 24 leaves room for one more task without becoming unbounded.
+ *
+ * The bound still exists because a wedged driver must not loop forever; override per run with
+ * `--max-turns`. Verified against D2's mock with `--max-turns 24`.
+ */
+export const DEFAULT_MAX_TURNS = 24;
 
 export { zeroUsage };
 
