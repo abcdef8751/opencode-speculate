@@ -14,6 +14,7 @@
 
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import type { Stats } from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import type { Json, ToolBox, ToolDescriptor } from "../types.ts";
@@ -88,9 +89,34 @@ async function assertRealInside(dir: string, abs: string): Promise<void> {
 
 async function resolveForWrite(dir: string, relative: unknown): Promise<string> {
   const abs = resolveInside(dir, relative);
-  const parent = path.dirname(abs);
-  await assertRealInside(dir, parent);
+  await assertRealInside(dir, path.dirname(abs));
+  await assertSafeWriteTarget(dir, abs);
   return abs;
+}
+
+/**
+ * Refuses a symlink at the target itself, and re-asserts the resolved path when the target exists.
+ *
+ * `resolveForWrite` checks the *parent*, which stops a symlinked directory being used to escape —
+ * but a pre-existing symlink at the target is then followed by `fs.writeFile`/`fs.readFile`. That
+ * is reachable from inside the sandbox (`shell({ command: "ln -s /etc/passwd evil.txt" })`), so a
+ * symlink target is refused outright rather than resolved.
+ *
+ * Residual gaps (see `harness/README.md` "Confinement"): a check-then-write race (TOCTOU) and hard
+ * links are outside what this scaffolding can catch.
+ */
+async function assertSafeWriteTarget(dir: string, abs: string): Promise<void> {
+  let stats: Stats | undefined;
+  try {
+    stats = await fs.lstat(abs);
+  } catch {
+    // Target does not exist yet: the prefix check plus the parent realpath check are all that apply.
+    return;
+  }
+  if (stats.isSymbolicLink()) {
+    throw new ToolBoxError(`refusing to write through a symlink: ${abs}`);
+  }
+  await assertRealInside(dir, abs);
 }
 
 async function resolveForRead(dir: string, relative: unknown): Promise<string> {

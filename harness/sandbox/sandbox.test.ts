@@ -60,6 +60,58 @@ describe("confinement", () => {
     await expect(box.call("write", { path: "/tmp/opencode/escape.txt", content: "x" })).rejects.toThrow(ToolBoxError);
   });
 
+  test("a symlink planted by the sandbox's own shell cannot be written or edited through", async () => {
+    const dir = await scratch();
+    const outsideDir = await scratch();
+    const outside = path.join(outsideDir, "target.txt");
+    await fs.writeFile(outside, "ORIGINAL\n", "utf8");
+    const box = createToolBox({ dir });
+
+    // Reachable from inside the sandbox without any host help.
+    const link = (await box.call("shell", { command: `ln -s ${outside} evil.txt` })) as { ok: boolean; exitCode: number };
+    expect(link.ok).toBe(true);
+    expect(link.exitCode).toBe(0);
+    expect((await fs.lstat(path.join(dir, "evil.txt"))).isSymbolicLink()).toBe(true);
+
+    await expect(box.call("write", { path: "evil.txt", content: "CLOBBERED\n" })).rejects.toThrow(/refusing to write through a symlink/);
+    await expect(box.call("edit", { path: "evil.txt", find: "ORIGINAL", replace: "EDITED" })).rejects.toThrow(/refusing to write through a symlink/);
+    // ...and reading through it is refused too, because the realpath lands outside.
+    await expect(box.call("read", { path: "evil.txt" })).rejects.toThrow(/through a symlink/);
+
+    expect(await fs.readFile(outside, "utf8")).toBe("ORIGINAL\n");
+  });
+
+  test("a symlinked parent directory cannot be used to write outside", async () => {
+    const dir = await scratch();
+    const outsideDir = await scratch();
+    const box = createToolBox({ dir });
+    await box.call("shell", { command: `ln -s ${outsideDir} linkdir` });
+
+    await expect(box.call("write", { path: "linkdir/new.txt", content: "x" })).rejects.toThrow(/through a symlink/);
+    await expect(box.call("read", { path: "linkdir/anything.txt" })).rejects.toThrow(/through a symlink/);
+    expect(await fs.readdir(outsideDir)).toEqual([]);
+  });
+
+  test("a symlink pointing back inside is refused for writes (documented strictness)", async () => {
+    const dir = await scratch();
+    const box = createToolBox({ dir });
+    await box.call("write", { path: "real.txt", content: "hi" });
+    await box.call("shell", { command: "ln -s real.txt inside-link.txt" });
+
+    await expect(box.call("write", { path: "inside-link.txt", content: "y" })).rejects.toThrow(/refusing to write through a symlink/);
+    expect(await box.call("read", { path: "inside-link.txt" })).toBe("hi");
+    expect(await box.call("read", { path: "real.txt" })).toBe("hi");
+  });
+
+  test("ordinary writes and edits still work", async () => {
+    const dir = await scratch();
+    const box = createToolBox({ dir });
+    await box.call("write", { path: "nested/ok.txt", content: "ok" });
+    expect(await box.call("read", { path: "nested/ok.txt" })).toBe("ok");
+    await box.call("edit", { path: "nested/ok.txt", find: "ok", replace: "fine" });
+    expect(await box.call("read", { path: "nested/ok.txt" })).toBe("fine");
+  });
+
   test("unknown tool names are rejected and names honour the requested subset", async () => {
     const dir = await scratch();
     const box = createToolBox({ dir, names: ["read", "nope"] });
