@@ -253,8 +253,8 @@ describe("decide detection", () => {
     expect(options.note).not.toContain("other resolve target")
   })
 
-  test("#3/S1 a multi-segment or non-identifier id is seen but not derivable", () => {
-    for (const id of ["a_b_decide", "x.y_decide", "typesafe_decide_decide", "a-b_decide", "2x_decide"]) {
+  test("#3/S1 a multi-segment, non-identifier or empty-prefix id is seen but not derivable", () => {
+    for (const id of ["a_b_decide", "x.y_decide", "typesafe_decide_decide", "a-b_decide", "2x_decide", "_decide", ".decide", "/decide"]) {
       const out = resolveOne([entry(id)])
       expect(out.found).toBe(false)
       // No fabricated call path is emitted...
@@ -278,12 +278,46 @@ describe("decide detection", () => {
     expect(out.note).toContain("a_b_decide")
   })
 
-  test("#1 the ambiguity count is of resolve targets, and same-path siblings are omitted", () => {
+  test("#1 siblings that share the chosen target's path are not an ambiguity", () => {
     const out = resolveOne([entry("typesafe_decide", "typesafe"), entry("decide", "typesafe"), entry("other_decide")])
     expect(out.codeModePath).toBe("tools.typesafe.decide")
     expect(out.note).toContain("1 other resolve target")
     expect(out.note).toContain('"other_decide"')
     expect(out.note).not.toContain('"typesafe_decide"')
+  })
+
+  test("#2 two alternatives sharing one non-best path count and list once", () => {
+    const out = resolveOne([entry("decide"), entry("foo_decide"), entry("foo.decide")])
+    expect(out.codeModePath).toBe("tools.decide")
+    expect(out.note).toContain("1 other resolve target")
+    expect(out.note).not.toContain("2 other resolve target")
+    // Both spellings of that one path are still named.
+    expect(out.note).toContain("foo.decide")
+    expect(out.note).toContain("foo_decide")
+  })
+
+  test("#1 unresolved ids from an earlier view are merged into a later resolution", () => {
+    const views: CatalogView[] = [
+      { name: "ctx.tool.list()", entries: [entry("a_b_decide")] },
+      { name: "transform-post", entries: [entry("typesafe_decide", "typesafe")] },
+      { name: "transform-pre", entries: [] },
+    ]
+    const out = resolveDecide(views)
+    expect(out.found).toBe(true)
+    expect(out.codeModePath).toBe("tools.typesafe.decide")
+    expect(out.source).toBe("transform-post")
+    expect(out.unresolved?.map((u) => u.id)).toEqual(["a_b_decide"])
+    expect(out.note).toContain("seen but not derivable")
+    expect(out.note).toContain("a_b_decide")
+  })
+
+  test("#1 unresolved ids are unioned and de-duplicated across views", () => {
+    const views: CatalogView[] = [
+      { name: "ctx.tool.list()", entries: [entry("a_b_decide"), entry("a_b_decide")] },
+      { name: "transform-post", entries: [entry("x.y_decide"), entry("typesafe_decide", "typesafe")] },
+    ]
+    const out = resolveDecide(views)
+    expect(out.unresolved?.map((u) => u.id)).toEqual(["a_b_decide", "x.y_decide"])
   })
 
   test("THE BUG: present only in the later ctx.tool.list() view → still found", () => {
@@ -441,5 +475,39 @@ describe("live-builtins CLI: decide honesty (#1, #6)", () => {
     const json = out(runCli(file, ["--json"]))
     expect(json.code).toBe(0)
     expect(JSON.parse(json.stdout).decide.unresolved[0].id).toBe("a_b_decide")
+  })
+
+  test("#1 a not-derivable id from the earlier view is surfaced when a later view resolves", () => {
+    const file = tmpStateFile()
+    writeFileSync(
+      file,
+      JSON.stringify(
+        makeState({
+          transform: {
+            runs: 1,
+            pre: [entry("a_b_decide")],
+            post: [entry("typesafe_decide", "typesafe")],
+            report: { flipped: [], already: [], skipped: [] },
+          },
+          catalogAfterTransforms: { at: new Date().toISOString(), entries: [entry("a_b_decide")] },
+        }),
+      ),
+    )
+    const result = out(runCli(file))
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("tools.typesafe.decide")
+    expect(result.stdout).toContain("seen but not derivable")
+    // nit 5: the summary surfaces unresolved siblings on the found:true path too.
+    expect(result.stdout).toContain("decide-shaped ids seen but not derivable: [a_b_decide]")
+  })
+
+  test("gap: --json omits `unresolved` when nothing was seen-but-not-derivable", () => {
+    const file = tmpStateFile()
+    writeFileSync(file, JSON.stringify(stateFromOldPlugin()))
+    const result = out(runCli(file, ["--json"]))
+    expect(result.code).toBe(0)
+    const record = JSON.parse(result.stdout)
+    expect(record.decide.codeModePath).toBe("tools.typesafe.decide")
+    expect(Object.prototype.hasOwnProperty.call(record.decide, "unresolved")).toBe(false)
   })
 })
