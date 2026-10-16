@@ -13,6 +13,7 @@ export type { ToolBoxOptions, ToolBoxToolName } from "./toolbox.ts";
 export {
   buildToolTree,
   executeScript,
+  calculateScriptFailures,
   DEFAULT_SCRIPT_LIMITS,
   SCRIPT_FAILURE_KINDS,
 } from "./codemode.ts";

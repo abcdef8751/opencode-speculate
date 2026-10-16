@@ -85,7 +85,7 @@ function detailRow(result: ArmResult): string {
   ].join(" | ");
 }
 
-export function renderMarkdown(report: RunReport): string {
+export function renderMarkdown(report: RunReport, notes: readonly string[] = []): string {
   const mock = isMockDriver(report.driver);
   const gate = evaluateGate(report.summary);
   const tasks = [...new Set(report.results.map((result) => result.taskId))].sort();
@@ -144,6 +144,13 @@ export function renderMarkdown(report: RunReport): string {
     lines.push(`| ${detailRow(result)} |`);
   }
   lines.push("");
+
+  if (notes.length > 0) {
+    lines.push("## Harness notes");
+    lines.push("");
+    for (const note of notes) lines.push(`- ${note}`);
+    lines.push("");
+  }
   return lines.join("\n");
 }
 
@@ -152,6 +159,8 @@ export interface WriteReportOptions {
   /** Base directory; the stamp directory is created inside it. */
   outBase?: string;
   stamp?: string;
+  /** Harness-level notes (module origins, warnings) surfaced in the markdown report. */
+  notes?: readonly string[];
 }
 
 /** Writes `report.json` and `report.md` into `<outBase>/<stamp>/` and returns their paths. */
@@ -163,6 +172,6 @@ export async function writeReport(opts: WriteReportOptions): Promise<ReportPaths
   const json = path.join(dir, "report.json");
   const markdown = path.join(dir, "report.md");
   await fs.writeFile(json, serialiseReport(opts.report), "utf8");
-  await fs.writeFile(markdown, renderMarkdown(opts.report), "utf8");
+  await fs.writeFile(markdown, renderMarkdown(opts.report, opts.notes ?? []), "utf8");
   return { dir, json, markdown };
 }

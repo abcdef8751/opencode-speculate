@@ -143,7 +143,11 @@ export async function executeScript(opts: ExecuteScriptOptions): Promise<ScriptE
   const logs = [...(result.logs ?? [])];
   const warnings = [...built.warnings];
   const truncated = result.truncated === true;
-
+  if (result.ok) {
+    for (const warning of result.warnings ?? []) {
+      warnings.push(`${warning.kind}: ${warning.message}`);
+    }
+  }
   if (result.ok) {
     return {
       ok: true,
@@ -180,3 +184,12 @@ export const SCRIPT_FAILURE_KINDS = [
   "TimeoutExceeded",
   "ExecutionFailure",
 ] as const;
+
+/**
+ * `ArmResult.scriptFailures`: one point per failed Code Mode execution, plus any parse-shaped
+ * warning the program emitted, i.e. the diagnostics a model would have to fix and retry.
+ */
+export function calculateScriptFailures(execution: ScriptExecution): number {
+  const parseWarnings = execution.warnings.filter((warning) => /^(ParseError|UnsupportedSyntax):/.test(warning)).length;
+  return (execution.ok ? 0 : 1) + parseWarnings;
+}
