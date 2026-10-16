@@ -224,6 +224,34 @@ describe("plugin setup()", () => {
     expect(audit.verdicts).toHaveLength(2)
   })
 
+  test("a repeated identical call is served from cache with no second request", async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return fakeSystemOneResponse({ q: { type: "noul", noul: 0.9 } })
+    }) as unknown as typeof fetch
+
+    const f = fakeContext()
+    await (plugin as { setup(ctx: unknown): Promise<unknown> }).setup(f.ctx)
+    const tool = f.registered[0]!
+
+    const call = {
+      state: "the same state",
+      questions: [
+        { mode: "noul", id: "q", criterion: "did it pass?", criteria: { true: "yes", false: "no" } },
+      ],
+    }
+
+    const first = (await tool.execute!(call, {})) as { output: { cached: boolean }[] }
+    const second = (await tool.execute!(call, {})) as { output: { cached: boolean }[] }
+
+    expect(first.output[0]!.cached).toBe(false)
+    expect(second.output[0]!.cached).toBe(true)
+    // the cache key used the engine's *default* sha256 hash, and a hit made no network call
+    expect(calls).toBe(1)
+    expect([...f.store.keys()].filter((k) => k.startsWith("decide/log/"))).toHaveLength(2)
+  })
+
   test("the audit hook accepts a namespaced tool name too", async () => {
     globalThis.fetch = (async () =>
       fakeSystemOneResponse({

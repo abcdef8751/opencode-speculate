@@ -128,7 +128,9 @@ export interface DecideVerdict {
 - **Confidence normalization.**
   - `noul`: `|2p − 1|`.
   - `choice`: `(p_max − 1/n) / (1 − 1/n)` with `n = Object.keys(options).length`; `n === 1` ⇒ `1`.
-  - `score`: the API's `confidence` as-is (`null`/absent ⇒ `0`).
+  - `score`: the API's `confidence` as-is (`null`/absent ⇒ `0`), clamped to `[0,1]`.
+    (Ratified 2026-10-16: the clamp differs from a literal "as-is" only on malformed input, which
+    the API does not produce; it prevents a downstream confidence comparison from going nonsensical.)
   - `value` for `score` is the API's expected `score`; keep the raw number (may be fractional).
 - **Escalation.** A question escalates iff its effective threshold
   (`question.escalateBelow ?? call.escalateBelow`) is a finite number **and**
@@ -142,10 +144,14 @@ export interface DecideVerdict {
   stored via the `StoragePort` as JSON containing the verdict **without** `latencyMs`/`cached`.
   A hit returns the cached verdict with `cached: true`, `latencyMs: 0`. A question in a batch may
   hit while its siblings miss — but a **batch request is skipped only if every question hits**.
-- **Decision log.** Register one entry per Jev request (not per question) through the injected
+- **Decision log.** Register one entry per `decide` call (not per question) through the injected
   `log` sink: `{ at, modelId, latencyMs, cached, questionIds, verdicts, usage }` (`at` = epoch ms),
   JSON-safe. The plugin wires this into `ctx.storage` (keys `decide/log/<iso>-<sha8>`); the harness wires it
   into an in-memory array. Logging never throws into the caller path.
+  A full cache hit **does** emit an entry, with `cached: true` and `latencyMs: 0` — otherwise the
+  `cached` field would be dead weight and the audit would silently lose judgements that were served
+  (ratified 2026-10-16; supersedes the earlier "one entry per Jev **request**" wording, which was
+  imprecise). `usage` is absent/`null` for a hit, since no backend call happened.
 
   **Ratified split (2026-10-16, reviewer finding 3):** the plugin persists the contract entry via the
   `log` sink under `decide/log/…`, and *additionally* writes a session-scoped audit record from the
