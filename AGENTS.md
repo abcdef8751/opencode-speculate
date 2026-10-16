@@ -52,3 +52,8 @@ Mode `execute` script. The reload tears down the session that is hosting the san
 script dies with `Tool.Error` mid-way (observed while landing this work). Commands that had already run
 before the reload do take effect — the failure is the script, not the change — but it is impossible to
 see that from the error, so treat any reload-inside-`execute` as an unknown partial state and re-check.
+
+Corollary, from the same incident: never write that command in backticks inside a double-quoted shell
+string in an `execute` script — backticks are command substitution, so the shell runs it. That is how
+this very note's commit message came out as "do not run Configuration reloaded from inside a Code Mode
+script": the reload executed while the message was being built.
