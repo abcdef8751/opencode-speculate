@@ -3,8 +3,8 @@
  *
  * This is *measurement scaffolding*, not a security boundary. It refuses textual escapes, symlinked
  * parents and symlinked write targets, and it exposes no network — but it is not race-free and has
- * no OS-level isolation. See `harness/README.md` for the exact residual limitations (TOCTOU, hard
- * links, no seccomp, no mount isolation).
+ * no OS-level isolation. See `harness/README.md` "Confinement" for the exact residual limitations
+ * (TOCTOU, hard links, no seccomp, no mount isolation).
  *
  * Two shapes are produced from the same implementations:
  *   - `descriptors` / `call()` for arm A (the model calls tools turn by turn);

@@ -111,7 +111,7 @@ as a tool failure *and* a script failure, rather than being papered over.
 | `correctness` | `TaskDef.verify(scratchDir)`; a throwing `verify` becomes `passed: false` with the message |
 | `transcript` | the Code Mode program (B/C) or the final assistant text (A) |
 | `logs` | Code Mode `console.log` output |
-| `decideCalls` / `decideLatencyMs` | §1 decision-log entries (one per judge request) and their summed `latencyMs` |
+| `decideCalls` / `decideLatencyMs` | §1 decision-log entries (one per `decide` **call** — a full cache hit included, with `usage: null`) and their summed `latencyMs` |
 | `escalated` / `escalations` | `escalations` = verdicts with `escalate: true`; `escalated` = `escalations > 0` |
 | `scriptFailures` | one per failed Code Mode execution, plus parse-shaped warnings (see `calculateScriptFailures`) |
 | `ok` | the arm completed without a harness-level error; for B/C it is the Code Mode execution result, so a failed script sets `ok: false` (correctness is separate) |
@@ -131,9 +131,16 @@ as a tool failure *and* a script failure, rather than being papered over.
 compares *rates*, so a broken baseline trivially satisfies it — a partially failed arm A also
 undercounts cache reads, which could hand the gate to C. Therefore `pass` additionally requires:
 
-- `baselineHealthy`: arm A produced runs and **all of them are `ok`** (`A.ok === A.runs`). All, not
-  "at least one": the hypothesis is a *mean vs mean* comparison, and one aborted A run makes the
-  baseline mean untrustworthy rather than merely noisy;
+- `baselineHealthy`: arm A produced runs, **all of them are `ok`** (`A.ok === A.runs`) and **none of
+  them was truncated**. All, not "at least one": the hypothesis is a *mean vs mean* comparison, and
+  one aborted A run makes the baseline mean untrustworthy rather than merely noisy. Truncation needs
+  its own check because `ok` only flags harness-level errors — an A run cut off by `maxTurns` is
+  `ok: true` yet has not completed the task, so its cache read is a lower bound and its correctness
+  is not comparable. `evaluateGate` therefore reads `GateOptions.results` (the CLI and the report
+  pass `RunReport.results`) and looks for the `truncated at maxTurns=<n>` note arm A records; a
+  truncated baseline makes the gate FAIL with `baseline arm A was truncated — … raise --max-turns
+  and re-run` in the notes, and any truncated arm is named (`arm A was CUT OFF mid-task in 1 run(s)`).
+  If a caller omits `results`, the truncation check cannot run — both call sites pass it;
 - `challengerHasEvidence`: arm C has at least one `ok` run (a fully failed C is not a win).
 
 Any arm with harness-level errors (`ok < runs`) is listed in the gate's `notes`
@@ -151,8 +158,8 @@ banner around it.
 ## The sandbox (`harness/sandbox/**`)
 
 `createToolBox({ dir, names })` exposes the six built-ins the `builtins-flip` work toggles —
-`read`, `grep`, `glob`, `shell`, `edit`, `write` — confined to `dir` (best-effort: see the exact
-guarantees and residual gaps at the end of this section). `names` honours
+`read`, `grep`, `glob`, `shell`, `edit`, `write` — confined to `dir` (best-effort: see
+§ "Confinement" below for the exact guarantees and residual gaps). `names` honours
 `TaskDef.tools`. The inputs/outputs follow the **ratified shapes** in `docs/CONTRACTS.md` §4:
 
 | tool | input | output |
@@ -182,24 +189,29 @@ Implementation notes:
 
 - built on `node:fs/promises` + `node:child_process` `execFile` with `cwd: dir`, an explicit
   timeout and `shell: false` — **never** `shell: true`, never a shell-interpolated command string;
-- every path goes through `path.resolve` + a prefix check. The parent of a write/edit target and the
-  target itself are `realpath`-checked, and a **symlink at the write/edit target is refused
-  outright** (`refusing to write through a symlink`) — including one pointing back inside the
-  directory. That matters because the sandbox can create such a link itself:
-  `shell({ command: "ln -s /etc/passwd evil.txt" })`. Reads through a symlink that resolves outside
-  are refused too;
 - `shell` takes `{ command }` (tokenised with quote support) plus optional `args`. `tokenizeCommand`
   handles quotes only — **no** pipes, redirection, globbing or variable expansion, because there is
   no shell;
 - a run's `AbortSignal` is forwarded to every sandbox tool call, so cancelling the harness kills an
   in-flight `shell` child (the `decide` call has its own `timeoutMs` instead; see §1);
 - the Code Mode interpreter exposes no network (`fetch`/`process` are `undefined` in the sandbox;
-  asserted by a test). The harness never injects a network global;
+  asserted by a test). The harness never injects a network global.
+
+### Confinement
+
+- every path goes through `path.resolve` + a prefix check against the scratch directory;
+- for a write or an edit, the **parent directory** is `realpath`-checked, so a symlinked directory
+  cannot be used to reach outside. An **existing** target that is a symlink is refused outright
+  (`refusing to write through a symlink`), including one pointing back inside — the sandbox can
+  create such a link itself: `shell({ command: "ln -s /etc/passwd evil.txt" })`. A target that does
+  not exist yet has nothing to resolve, so it relies on the parent + prefix checks alone;
+- reads refuse a path that resolves outside, including through a symlink;
 - **confinement is honest but not a security boundary.** It refuses textual escapes, symlinked
-  parents and symlinked write targets, but it is not race-free and not a sandbox: a check-then-write
-  TOCTOU window remains, hard links to files outside the directory are not detected (a hard link is
-  a second name for the same inode, not a redirect), and there is no seccomp, mount namespace, CPU
-  limit or privilege drop. Do not run untrusted programs through it.
+  parents and symlinked write targets, but it is not race-free and not a sandbox: a check-then-use
+  TOCTOU window remains between the checks and the `fs` call, hard links to files outside the
+  directory are not detected (a hard link is a second name for the same inode, not a redirect), and
+  there is no seccomp, mount namespace, CPU limit or privilege drop. Do not run untrusted programs
+  through it.
 
 ## Drivers
 
