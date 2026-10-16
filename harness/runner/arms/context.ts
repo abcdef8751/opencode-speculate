@@ -1,14 +1,23 @@
 /**
  * Shared context and conventions for the three measurement arms.
  *
- * ## The arm-selection convention (contract friction, documented)
+ * ## How the three arms look to a driver
  *
  * `ModelDriver.complete(req)` (frozen in `harness/types.ts`) carries no arm identifier, so the
- * runner makes the arm unambiguous three ways:
- *  1. the first system message starts with `harness:arm=<A|B|C>;task=<id>;run=<n>`;
- *  2. arm A receives the real `ToolBox.descriptors`; arms B/C receive a single `execute` tool;
- *  3. arms B/C expect the program in `ModelResponse.text` (or in an `execute` tool call).
- * See `harness/README.md` § "Driver conventions".
+ * runner makes the arms distinguishable from the request itself:
+ *
+ *  1. **tool list** — arm A gets the real `ToolBox.descriptors`; arms B/C get a single `execute`
+ *     tool (`EXECUTE_TOOL`). This is the primary signal.
+ *  2. **prompt** — arm C's prompt names `tools.typesafe.decide(...)` (see `scriptPrompt()`); arms
+ *     B/C are told to answer with one Code Mode program and arm A to call tools turn by turn.
+ *  3. **response shape** — arms B/C expect the program in `ModelResponse.text` or in an `execute`
+ *     tool call; arm A expects `toolCalls[]`.
+ *
+ * The first system message additionally starts with an **informational** marker
+ * `harness:arm=<A|B|C>;task=<id>;run=<n>` (`armSystemMessage`). It exists for transcript
+ * readability, for `parseArmMarker()` in tests, and because a driver that picks its canned response
+ * by task id finds the id there — but **no driver is required to parse it**, and the harness never
+ * depends on a driver doing so. See `harness/README.md` § "Driver conventions".
  *
  * OWNER: worker D1.
  */
@@ -50,7 +59,11 @@ export interface ArmContext {
   now?: (() => number) | undefined;
 }
 
-/** The first system message; the machine-readable prefix is the arm marker. */
+/**
+ * The first system message. The leading `harness:arm=…` marker is **informational** (transcript
+ * readability + task-id discoverability); drivers are not required to parse it — see the module
+ * header. The sentence after it is prompt guidance for a real model, not protocol.
+ */
 export function armSystemMessage(arm: ArmID, task: TaskDef, runIndex: number): string {
   const marker = `harness:arm=${arm};task=${task.id};run=${runIndex}`;
   if (arm === "A") {

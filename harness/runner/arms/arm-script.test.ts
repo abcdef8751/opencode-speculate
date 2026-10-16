@@ -2,8 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { runArmB, runArmC, extractScript, scriptPrompt } from "./arm-script.ts";
 import { EXECUTE_TOOL, type ArmContext } from "./context.ts";
 import type { DecidePluginTool, DecideRuntime, DecideRuntimeDeps } from "../../sandbox/decide-port.ts";
-import { createFakeJudge } from "../fallback/drivers.ts";
-import { createDecideRuntime as createShimRuntime } from "../fallback/decide-shim.ts";
+import { createFakeJudge } from "../../drivers/index.ts";
+import { createDecideRuntime } from "../../../src/decide/index.ts";
 import { cleanupTempDirs, replayDriver, response, testTask, testToolbox, usage } from "../testing.ts";
 
 afterAll(cleanupTempDirs);
@@ -186,7 +186,7 @@ describe("arm C: script + decide", () => {
     expect(result.error).toContain("arm C requires");
   });
 
-  test("the offline shim + fake judge produce decide records and non-escalating verdicts", async () => {
+  test("the real decide runtime + fake judge produce decide records and non-escalating verdicts", async () => {
     const toolbox = await testToolbox();
     const driver = replayDriver([
       response(
@@ -201,7 +201,7 @@ describe("arm C: script + decide", () => {
       context({
         driver,
         toolbox,
-        createDecideRuntime: createShimRuntime,
+        createDecideRuntime,
         judge: createFakeJudge({ q1: { noul: 0.95, confidence: 0.9 } }),
       }),
     );
@@ -217,6 +217,51 @@ describe("arm C: script + decide", () => {
     expect(result.escalated).toBe(false);
     expect(result.escalations).toBe(0);
     expect(result.decideLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("the real runtime escalates on a low-confidence answer, and counts it", async () => {
+    const toolbox = await testToolbox();
+    const driver = replayDriver([
+      response(
+        [
+          "const d = await tools.typesafe.decide({ state: { a: 1 }, questions: { mode: \"noul\", id: \"q1\", criteria: { true: \"yes\", false: \"no\" } }, escalateBelow: 0.9 });",
+          'if (d.escalate) { console.log("escalated:", d.reason); return { escalated: true }; }',
+          "return { escalated: false };",
+        ].join("\n"),
+      ),
+    ]);
+    const result = await runArmC(
+      context({
+        driver,
+        toolbox,
+        createDecideRuntime,
+        judge: createFakeJudge({ q1: { noul: 0.6, confidence: 0.2 } }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.escalated).toBe(true);
+    expect(result.escalations).toBe(1);
+    expect(result.logs.join(" ")).toContain("escalated:");
+    expect(result.decideCalls[0]!.verdicts[0]!.escalate).toBe(true);
+  });
+
+  test("a decide question the judge cannot answer fails the script (fail loud, counted)", async () => {
+    const toolbox = await testToolbox();
+    const driver = replayDriver([
+      response(
+        "const d = await tools.typesafe.decide({ state: { a: 1 }, questions: { mode: \"noul\", id: \"unscripted\", criteria: { true: \"y\", false: \"n\" } } }); return d.value;",
+      ),
+    ]);
+    const result = await runArmC(
+      context({ driver, toolbox, createDecideRuntime, judge: createFakeJudge({ other: { noul: 0.9 } }) }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.scriptFailures).toBe(1);
+    expect(result.decideCalls).toEqual([]);
+    expect(result.toolFailures).toBe(1);
+    expect(result.notes.join(" ")).toContain("no scripted answer");
   });
 
   test("usage from the single turn is attributed, and tools list is the execute tool", async () => {

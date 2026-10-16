@@ -26,7 +26,7 @@ export interface RunHarnessOptions {
   stamp?: string;
   scratchBase?: string;
   keepScratch?: boolean;
-  /** Injected for tests; otherwise loaded from the frozen modules with the D1 fallback. */
+  /** Injected for tests; otherwise loaded from the frozen modules (see `./sources.ts`). */
   sources?: Sources;
   signal?: AbortSignal;
   /** Extra answers for the offline fake judge (arm C). */
@@ -100,10 +100,6 @@ export async function runHarness(opts: RunHarnessOptions): Promise<RunOutcome> {
   if (opts.driverName !== "mock" && apiKey === undefined) {
     warnings.push("no API key configured — arm C uses the offline fake judge");
   }
-  const fallbackAnswers =
-    sources.origin.tasks === "fallback"
-      ? (await import("./fallback/scenario.ts")).FALLBACK_JUDGE_ANSWERS
-      : {};
 
   const results: ArmResult[] = [];
   for (const task of tasks) {
@@ -145,7 +141,7 @@ export async function runHarness(opts: RunHarnessOptions): Promise<RunOutcome> {
         if (arm === "C") {
           judge = useRealJudge && createJevJudge !== undefined && apiKey !== undefined
             ? createJevJudge({ apiKey })
-            : sources.createFakeJudge({ ...fallbackAnswers, ...taskJudgeScript(task), ...(opts.judgeScript ?? {}) });
+            : sources.createFakeJudge({ ...taskJudgeScript(task), ...(opts.judgeScript ?? {}) });
         }
 
         const ctx: ArmContext = {
