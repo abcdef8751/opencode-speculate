@@ -1,0 +1,31 @@
+{
+  "name": "opencode-codemode-decide",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Code Mode decide(): a state-centric fuzzy judge as an OpenCode V2 plugin tool (Jev/TypeSafe-backed), plus the headless measurement harness for the Code Mode cache-read hypothesis.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "harness": "bun run harness/run.ts",
+    "probe": "bun run probe/live-builtins.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.30",
+    "@typesafe-ai/sdk": "0.7.0"
+  },
+  "devDependencies": {
+    "@opencode/codemode": "2.0.30",
+    "@types/bun": "latest",
+    "@types/node": "^26.4.1",
+    "effect": "4.0.1",
+    "typescript": "^5.9.3"
+  }
+}
