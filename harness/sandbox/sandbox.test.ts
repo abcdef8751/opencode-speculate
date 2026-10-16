@@ -11,6 +11,7 @@ import {
   ToolBoxError,
 } from "./index.ts";
 import type { DecidePluginTool } from "./decide-port.ts";
+import type { ToolBox } from "../types.ts";
 
 const roots: string[] = [];
 
@@ -295,8 +296,43 @@ describe("code mode sandbox", () => {
     expect(paths).not.toContain("tools.write"); // excluded by `names`
   });
 
-  test("tool call limit is enforced as a script failure", async () => {
+  test("an aborted signal interrupts a running shell child", async () => {
     const dir = await scratch();
+    const box = createToolBox({ dir });
+    const controller = new AbortController();
+    controller.abort();
+
+    const started = Date.now();
+    await expect(box.call("shell", { command: "sleep", args: ["10"] }, controller.signal)).rejects.toThrow(/abort/i);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  test("executeScript forwards its AbortSignal to every sandbox tool call", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | undefined)[] = [];
+    const spy: ToolBox = {
+      dir: "/tmp/opencode",
+      names: ["read"],
+      descriptors: [{ name: "read", description: "spy", input: { type: "object" } }],
+      async call(name: string, _input: unknown, signal?: AbortSignal) {
+        seen.push(signal);
+        return `${name}-ok`;
+      },
+    };
+
+    const result = await executeScript({
+      toolbox: spy,
+      code: `return await tools.read({ path: "x" });`,
+      limits: { timeoutMs: 5_000 },
+      signal: controller.signal,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.value).toBe("read-ok");
+    expect(seen).toEqual([controller.signal]);
+  });
+
+  test("tool call limit is enforced as a script failure", async () => {    const dir = await scratch();
     await fs.writeFile(path.join(dir, "a.txt"), "a", "utf8");
     const box = createToolBox({ dir });
     const result = await executeScript({

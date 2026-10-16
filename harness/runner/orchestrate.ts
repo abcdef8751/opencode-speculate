@@ -181,7 +181,7 @@ export async function runHarness(opts: RunHarnessOptions): Promise<RunOutcome> {
   const reportNotes = [
     ...warnings,
     `modules: ${(["tasks", "drivers", "decide"] as const).map((key) => `${key}=${sources.origin[key]}`).join(" ")}`,
-    `maxTurns=${maxTurns}`,
+    `maxTurns=${maxTurns} (arm A only); arms B/C make exactly one model call and never retry — "turns" is not a like-for-like efficiency comparison`,
   ];
   const paths = await writeReport({
     report,

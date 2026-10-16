@@ -101,6 +101,7 @@ export async function runScriptArm(arm: "B" | "C", ctx: ArmContext): Promise<Arm
         ...(decideTool === undefined ? {} : { decide: decideTool }),
         code,
         ...(ctx.limits === undefined ? {} : { limits: ctx.limits }),
+        ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
       });
 
       result.logs = execution.logs;

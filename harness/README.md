@@ -41,6 +41,12 @@ clear the longest task's plan: cutting arm A off mid-task undercounts its turns 
 reads, i.e. it flatters the script arms for the exact quantity being measured. The default is 24 —
 above the longest known plan (`rename-symbol`, 19 turns) while still a real bound.
 
+**`turns` is not a like-for-like model-efficiency comparison.** Arms B and C make exactly **one**
+model call per run and never retry after a parse or tool failure (contract §4), while arm A may use
+up to `maxTurns` calls. The arms are compared on **cache-read tokens and correctness**, not on turn
+count: a `turns 1 vs 8` row describes how the work was expressed, not how much model work it took.
+The gate never looks at `turns`.
+
 Each (task, run, arm) gets its own **fresh scratch directory** — a copy of `TaskDef.fixture`, then
 `TaskDef.setup?.(dir)`. Scratch lives under `/tmp/opencode/harness-runs/<stamp>/<task>/run-<n>/<arm>`
 and is removed at the end unless `--keep-scratch` is passed. The fixture source is never mutated.
@@ -118,7 +124,27 @@ as a tool failure *and* a script failure, rather than being papered over.
 - `cacheReadDownVsB` — C < B (informational: does `decide` cost cache reads on top of the script?);
 - `correctnessEqualOrBetter` — C's pass rate ≥ A's **and** ≥ B's;
 - `escalationLow` — C's escalation rate ≤ 0.25 (override via `GateOptions.maxEscalationRate`);
-- `pass` — `cacheReadDownVsA && correctnessEqualOrBetter && escalationLow` and C produced runs.
+- `pass` — `cacheReadDownVsA && correctnessEqualOrBetter && escalationLow && baselineHealthy &&
+  challengerHasEvidence` (see below).
+
+**Baseline health (why `pass` needs more than the three named criteria).** `correctnessEqualOrBetter`
+compares *rates*, so a broken baseline trivially satisfies it — a partially failed arm A also
+undercounts cache reads, which could hand the gate to C. Therefore `pass` additionally requires:
+
+- `baselineHealthy`: arm A produced runs and **all of them are `ok`** (`A.ok === A.runs`). All, not
+  "at least one": the hypothesis is a *mean vs mean* comparison, and one aborted A run makes the
+  baseline mean untrustworthy rather than merely noisy;
+- `challengerHasEvidence`: arm C has at least one `ok` run (a fully failed C is not a win).
+
+Any arm with harness-level errors (`ok < runs`) is listed in the gate's `notes`
+(`harness-level errors (ok/runs): A=1/2 …`). `GateVerdict` is frozen in `harness/types.ts`, so this
+rule surfaces through `pass` and `notes` only.
+
+**Synthetic runs carry their caveat in the verdict.** Pass `GateOptions.driver` (the CLI and the
+report pass `RunReport.driver`); when it names the mock driver, the first gate note is
+`SYNTHETIC NUMBERS (driver "mock"): token counts are canned, not measured — this verdict is plumbing
+evidence, not a result`. The caveat therefore travels with `gate: PASS` itself, not just with the
+banner around it.
 
 ## The sandbox (`harness/sandbox/**`)
 
@@ -153,16 +179,24 @@ Implementation notes:
 
 - built on `node:fs/promises` + `node:child_process` `execFile` with `cwd: dir`, an explicit
   timeout and `shell: false` — **never** `shell: true`, never a shell-interpolated command string;
-- every path goes through `path.resolve` + a prefix check, and the deepest existing ancestor is
-  also `realpath`-checked (symlink escape);
+- every path goes through `path.resolve` + a prefix check. The parent of a write/edit target and the
+  target itself are `realpath`-checked, and a **symlink at the write/edit target is refused
+  outright** (`refusing to write through a symlink`) — including one pointing back inside the
+  directory. That matters because the sandbox can create such a link itself:
+  `shell({ command: "ln -s /etc/passwd evil.txt" })`. Reads through a symlink that resolves outside
+  are refused too;
 - `shell` takes `{ command }` (tokenised with quote support) plus optional `args`. `tokenizeCommand`
   handles quotes only — **no** pipes, redirection, globbing or variable expansion, because there is
   no shell;
+- a run's `AbortSignal` is forwarded to every sandbox tool call, so cancelling the harness kills an
+  in-flight `shell` child (the `decide` call has its own `timeoutMs` instead; see §1);
 - the Code Mode interpreter exposes no network (`fetch`/`process` are `undefined` in the sandbox;
   asserted by a test). The harness never injects a network global;
-- **confinement is honest but not a security boundary.** It prevents accidental path escapes and
-  symlink tricks, but there is no seccomp, mount namespace, CPU limit or privilege drop, and TOCTOU
-  races are possible. Do not run untrusted programs through it.
+- **confinement is honest but not a security boundary.** It refuses textual escapes, symlinked
+  parents and symlinked write targets, but it is not race-free and not a sandbox: a check-then-write
+  TOCTOU window remains, hard links to files outside the directory are not detected (a hard link is
+  a second name for the same inode, not a redirect), and there is no seccomp, mount namespace, CPU
+  limit or privilege drop. Do not run untrusted programs through it.
 
 ## Drivers
 

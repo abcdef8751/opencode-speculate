@@ -5,6 +5,7 @@ import type { DecidePluginTool, DecideRuntime, DecideRuntimeDeps } from "../../s
 import { createFakeJudge } from "../../drivers/index.ts";
 import { createDecideRuntime } from "../../../src/decide/index.ts";
 import { cleanupTempDirs, replayDriver, response, testTask, testToolbox, usage } from "../testing.ts";
+import type { ToolBox } from "../../types.ts";
 
 afterAll(cleanupTempDirs);
 
@@ -264,8 +265,27 @@ describe("arm C: script + decide", () => {
     expect(result.notes.join(" ")).toContain("no scripted answer");
   });
 
-  test("usage from the single turn is attributed, and tools list is the execute tool", async () => {
-    const driver = replayDriver([response("return 1;", [], usage(7, 70, 3))]);
+  test("the arm's AbortSignal reaches the sandbox tools", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | undefined)[] = [];
+    const spy: ToolBox = {
+      dir: "/tmp/opencode",
+      names: ["read"],
+      descriptors: [{ name: "read", description: "spy", input: { type: "object" } }],
+      async call(_name: string, _input: unknown, signal?: AbortSignal) {
+        seen.push(signal);
+        return "ok";
+      },
+    };
+    const driver = replayDriver([response(`return await tools.read({ path: "x" });`)]);
+
+    const result = await runArmB(context({ driver, toolbox: spy, signal: controller.signal }));
+
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([controller.signal]);
+  });
+
+  test("usage from the single turn is attributed, and tools list is the execute tool", async () => {    const driver = replayDriver([response("return 1;", [], usage(7, 70, 3))]);
     const result = await runArmC(
       context({
         driver,

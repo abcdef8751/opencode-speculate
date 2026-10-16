@@ -119,6 +119,10 @@ export function renderMarkdown(report: RunReport, notes: readonly string[] = [])
     "_means per run; `cacheRead`/`fresh`/`output` are tokens; `escalation`/`scriptFail` are rates over runs._",
   );
   lines.push("");
+  lines.push(
+    "_`turns` is **not** a like-for-like model-efficiency comparison: arms B/C make exactly one model call per run and never retry after a parse or tool failure, while arm A may use up to its `maxTurns` budget. The arms are compared on cache-read tokens and correctness._",
+  );
+  lines.push("");
 
   lines.push("## Gate");
   lines.push("");
