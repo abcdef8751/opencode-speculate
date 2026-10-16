@@ -93,9 +93,13 @@ the raw record.
   ```
 
   ```js
-  const r = await tools.read({ filePath: "/tmp/opencode/probe-read.txt" })
+  const r = await tools.read({ path: "/tmp/opencode/probe-read.txt" })
   return r
   ```
+
+  (Verified live 2026-10-16: the tool takes `path`. A `{ filePath }` argument fails with
+  `Invalid arguments for tool "read": - path: Missing key` — and note `read` resolves to an
+  *object*, not a string, so `.slice()` on the result throws.)
 
   Watch whether the agent asks for read/shell approval. Then re-run `bun run probe`.
 
