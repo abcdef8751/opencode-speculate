@@ -173,63 +173,120 @@ function toolLeaf(entry: CatalogEntry): string {
   return entry.id
 }
 
-/**
- * Is this catalog entry the `decide` tool? Accepts every id spelling the host has
- * been seen to use: bare `decide`, `<ns>_decide`, `<ns>.decide`, `<ns>/decide`.
- * Do not hardcode a single spelling.
- */
-function isDecideEntry(entry: CatalogEntry): boolean {
-  if (toolLeaf(entry) === "decide") return true
-  const lastSegment = entry.id.split(/[_./]/).pop()
-  return lastSegment === "decide"
+/** How a decide candidate's namespace was obtained, for the note. */
+type NamespaceOrigin = "options" | "id" | "none"
+
+/** A catalog entry that looks like the `decide` tool, with its resolved call path. */
+interface DecideCandidate {
+  entry: CatalogEntry
+  /** Effective namespace for the call path (from `options.namespace`, else derived from the id). */
+  namespace: string | undefined
+  path: string
+  namespaceFrom: NamespaceOrigin
+  /** Lower is better: 0 = namespace `typesafe`, 1 = exact bare `decide`, 2 = derived namespace. */
+  rank: number
 }
 
-/** Pick the best `decide` match (prefer the `typesafe` namespace) from one view. */
-function findDecideEntry(entries: CatalogEntry[]): CatalogEntry | undefined {
-  const matches = entries.filter(isDecideEntry)
-  if (matches.length === 0) return undefined
-  return (
-    matches.find((e) => e.namespace === "typesafe") ??
-    matches.find((e) => typeof e.namespace === "string" && e.namespace.length > 0) ??
-    matches[0]
+/** `foo_decide`, `foo.decide`, `foo/decide` → the part before the separator is the namespace. */
+const DECIDE_ID_SUFFIX = /^(?<prefix>.+)[_./]decide$/
+
+/**
+ * Classify one catalog entry as the `decide` tool, or not. Every id spelling the
+ * host has been seen to use is accepted; when `options.namespace` is absent but the
+ * id is `<ns>[_./]decide`, the namespace is derived from the id so the reported
+ * call path is right (never a bare `tools.decide` for a namespaced tool).
+ */
+function decideCandidate(entry: CatalogEntry): DecideCandidate | undefined {
+  const optsNs = typeof entry.namespace === "string" && entry.namespace.length > 0 ? entry.namespace : undefined
+
+  if (optsNs !== undefined) {
+    // With an explicit namespace the leaf (after stripping that namespace prefix)
+    // must be exactly `decide`; anything else is not the decide tool.
+    if (toolLeaf(entry) !== "decide") return undefined
+    return {
+      entry,
+      namespace: optsNs,
+      path: `tools.${optsNs}.decide`,
+      namespaceFrom: "options",
+      rank: optsNs === "typesafe" ? 0 : 2,
+    }
+  }
+
+  if (entry.id === "decide") {
+    return { entry, namespace: undefined, path: "tools.decide", namespaceFrom: "none", rank: 1 }
+  }
+
+  const match = DECIDE_ID_SUFFIX.exec(entry.id)
+  const prefix = match?.groups?.prefix
+  if (prefix !== undefined && prefix.length > 0) {
+    return {
+      entry,
+      namespace: prefix,
+      path: `tools.${prefix}.decide`,
+      namespaceFrom: "id",
+      rank: prefix === "typesafe" ? 0 : 2,
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Rank the decide candidates in one view: namespace `typesafe` first, then an exact
+ * bare `decide`, then id-derived namespaces; ties broken by id for determinism.
+ * Every candidate is returned so the note can name an ambiguity instead of silently
+ * picking one.
+ */
+function chooseDecide(entries: CatalogEntry[]): { best: DecideCandidate; others: DecideCandidate[] } | undefined {
+  const candidates: DecideCandidate[] = []
+  for (const entry of entries) {
+    const candidate = decideCandidate(entry)
+    if (candidate !== undefined) candidates.push(candidate)
+  }
+  if (candidates.length === 0) return undefined
+  const sorted = [...candidates].sort(
+    (a, b) => a.rank - b.rank || (a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0),
   )
+  const [best, ...others] = sorted
+  return { best: best as DecideCandidate, others }
 }
 
 function describeDecide(
-  entry: CatalogEntry,
+  pick: { best: DecideCandidate; others: DecideCandidate[] },
   source: CatalogViewName,
   checked: { view: CatalogViewName; entries: number | null }[],
 ): DecideResolution {
-  const ns = typeof entry.namespace === "string" && entry.namespace.length > 0 ? entry.namespace : undefined
-  const codeModePath = ns === undefined ? "tools.decide" : `tools.${ns}.decide`
+  const { best, others } = pick
+  const nsText =
+    best.namespace === undefined
+      ? "no namespace"
+      : `namespace "${best.namespace}"${best.namespaceFrom === "id" ? " (derived from the id)" : ""}`
+  const ambiguity =
+    others.length === 0
+      ? ""
+      : ` — ${others.length} other decide-shaped id(s) in this view (${others
+          .map((o) => `"${o.entry.id}" → ${o.path}`)
+          .join(", ")}); picked by rank typesafe > bare decide > derived namespace`
   return {
     found: true,
-    id: entry.id,
-    namespace: entry.namespace,
-    codeModePath,
+    id: best.entry.id,
+    namespace: best.namespace,
+    codeModePath: best.path,
     source,
     checked,
-    note: `matched catalog id "${entry.id}"${ns === undefined ? "" : ` (namespace "${ns}")`} in the ${source} view → call it as ${codeModePath}`,
+    note: `matched catalog id "${best.entry.id}" (${nsText}) in the ${source} view → call it as ${best.path}${ambiguity}`,
   }
 }
 
 function unknownDecideNote(checked: { view: CatalogViewName; entries: number | null }[]): string {
-  const listed = checked
-    .map((c) => `${c.view}: ${c.entries === null ? "not captured" : `${c.entries} entries`}`)
-    .join("; ")
+  const listed =
+    checked.length === 0
+      ? "no catalog views recorded"
+      : checked.map((c) => `${c.view}: ${c.entries === null ? "not captured" : `${c.entries} entries`}`).join("; ")
   return (
     "not visible in any catalog view the probe could read " +
     `(${listed}). The probe cannot tell whether it is absent or was registered after its snapshots — unknown, not a finding.`
   )
-}
-
-/** Resolve the effective Code Mode path of `decide` from one catalog view. */
-export function resolveDecidePath(entries: CatalogEntry[], source: CatalogViewName = "transform-post"): DecideResolution {
-  const match = findDecideEntry(entries)
-  if (match === undefined) {
-    return { found: false, note: unknownDecideNote([{ view: source, entries: entries.length }]) }
-  }
-  return describeDecide(match, source, [{ view: source, entries: entries.length }])
 }
 
 /** The catalog views a record holds, most complete first. */
@@ -250,12 +307,13 @@ export function decideViews(state: ProbeState): CatalogView[] {
  * "unknown", never as a cause.
  */
 export function resolveDecide(views: CatalogView[]): DecideResolution {
-  const checked: { view: CatalogViewName; entries: number | null }[] = []
+  // Record every view up front (no truncation on early return) so the report can
+  // always list what was checked; which view matched is carried in `source`.
+  const checked = views.map((v) => ({ view: v.name, entries: v.entries === null ? null : v.entries.length }))
   for (const view of views) {
-    checked.push({ view: view.name, entries: view.entries === null ? null : view.entries.length })
     if (view.entries === null) continue
-    const match = findDecideEntry(view.entries)
-    if (match !== undefined) return describeDecide(match, view.name, checked)
+    const pick = chooseDecide(view.entries)
+    if (pick !== undefined) return describeDecide(pick, view.name, checked)
   }
   return { found: false, checked, note: unknownDecideNote(checked) }
 }
@@ -600,9 +658,10 @@ function printReport(state: ProbeState): void {
     for (const call of readCalls.slice(-10)) console.log(`  ${call.at} ${call.phase} agent=${call.agent} status=${call.status ?? "-"}`)
     console.log("")
     console.log("INTERPRETATION: a `read` execute.before/after shows a read call reached the host's tool pipeline.")
-    console.log("This record alone cannot say whether it came from inside the sandbox or from a direct call —")
-    console.log("but a sandbox call does not bypass the pipeline. Whether the approval PROMPT appears is")
-    console.log("HUMAN-observed in the TUI at the moment the script runs.")
+    console.log("This record alone cannot say whether it came from inside the sandbox or from a direct call.")
+    console.log("If it came from the sandbox, then the sandbox did not bypass the pipeline, so a leaf permission")
+    console.log("check would still fire for it. Whether the approval PROMPT appears is HUMAN-observed in the TUI")
+    console.log("at the moment the script runs.")
   }
 
   renderSection("raw summary", "[AUTOMATED]")
@@ -682,7 +741,11 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (asJson) {
-    console.log(JSON.stringify(state, null, 2))
+    // Recompute `decide` so the JSON agrees with the printed report for records
+    // written by any plugin version — old records persisted a stale (and, in the
+    // live false negative, actively wrong) `decide` field. CONTRACTS.md §2 defines
+    // the probe's required outputs but does not require --json to be a raw dump.
+    console.log(JSON.stringify({ ...state, decide: resolveDecide(decideViews(state)) }, null, 2))
     return
   }
 

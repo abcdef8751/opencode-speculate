@@ -7,7 +7,6 @@ import {
   decideViews,
   readCatalog,
   resolveDecide,
-  resolveDecidePath,
   type CatalogEntry,
   type CatalogView,
   type ProbeState,
@@ -35,25 +34,36 @@ describe("readCatalog", () => {
   })
 })
 
-describe("resolveDecidePath", () => {
+/** Resolve decide from a single view; the multi-view case is covered further down. */
+const resolveOne = (entries: CatalogEntry[]): ReturnType<typeof resolveDecide> =>
+  resolveDecide([{ name: "transform-post", entries }])
+
+describe("decide resolution (single view)", () => {
   test("namespaced decide → tools.<ns>.decide", () => {
-    const out = resolveDecidePath([{ id: "decide", codemode: true, namespace: "typesafe", optionKeys: ["namespace"] }])
+    const out = resolveOne([{ id: "decide", codemode: true, namespace: "typesafe", optionKeys: ["namespace"] }])
     expect(out.found).toBe(true)
     expect(out.codeModePath).toBe("tools.typesafe.decide")
   })
 
   test("un-namespaced decide → tools.decide", () => {
-    const out = resolveDecidePath([{ id: "decide", codemode: true, namespace: undefined, optionKeys: [] }])
+    const out = resolveOne([{ id: "decide", codemode: true, namespace: undefined, optionKeys: [] }])
     expect(out.codeModePath).toBe("tools.decide")
   })
 
   test("absent decide is reported as unknown, never as a cause", () => {
-    const out = resolveDecidePath([{ id: "read", codemode: true, namespace: undefined, optionKeys: [] }])
+    const out = resolveOne([{ id: "read", codemode: true, namespace: undefined, optionKeys: [] }])
     expect(out.found).toBe(false)
     expect(out.codeModePath).toBeUndefined()
     expect(out.note).toContain("not visible")
     expect(out.note).toContain("unknown")
     expect(out.note).not.toContain("not loaded")
+  })
+
+  test("#8 an empty view list renders without a dangling '()'", () => {
+    const out = resolveDecide([])
+    expect(out.found).toBe(false)
+    expect(out.note).toContain("no catalog views recorded")
+    expect(out.note).not.toContain("()")
   })
 })
 
@@ -174,28 +184,48 @@ const entry = (id: string, namespace?: string): CatalogEntry => ({
 })
 
 describe("decide detection", () => {
-  test("present under a namespaced id (typesafe_decide) → tools.typesafe.decide", () => {
-    const out = resolveDecidePath([entry("read"), entry("typesafe_decide", "typesafe")])
+  test("#2 a namespaced id without options.namespace derives the namespace", () => {
+    const out = resolveOne([entry("typesafe_decide")])
     expect(out.found).toBe(true)
     expect(out.id).toBe("typesafe_decide")
     expect(out.codeModePath).toBe("tools.typesafe.decide")
   })
 
-  test("present as a bare decide (no namespace) → tools.decide", () => {
-    const out = resolveDecidePath([entry("decide")])
+  test("#2 an id-derived namespace is never reported as bare tools.decide", () => {
+    const out = resolveOne([entry("foo_decide")])
     expect(out.found).toBe(true)
+    expect(out.codeModePath).toBe("tools.foo.decide")
+    expect(out.codeModePath).not.toBe("tools.decide")
+  })
+
+  test("#2 a non-decide leaf under a namespace is not a candidate", () => {
+    expect(resolveOne([entry("typesafe_something_decide", "typesafe")]).found).toBe(false)
+  })
+
+  test("accepts dot/slash spellings, with or without options.namespace", () => {
+    expect(resolveOne([entry("typesafe.decide", "typesafe")]).codeModePath).toBe("tools.typesafe.decide")
+    expect(resolveOne([entry("typesafe/decide", "typesafe")]).codeModePath).toBe("tools.typesafe.decide")
+    expect(resolveOne([entry("typesafe.decide")]).codeModePath).toBe("tools.typesafe.decide")
+  })
+
+  test("#3 an exact bare decide beats a derived-namespace id, and names the ambiguity", () => {
+    const out = resolveOne([entry("decide"), entry("foo_decide")])
     expect(out.codeModePath).toBe("tools.decide")
+    expect(out.note).toContain("other decide-shaped")
+    expect(out.note).toContain("foo_decide")
   })
 
-  test("accepts the dot and slash id spellings too", () => {
-    expect(resolveDecidePath([entry("typesafe.decide", "typesafe")]).codeModePath).toBe("tools.typesafe.decide")
-    expect(resolveDecidePath([entry("typesafe/decide", "typesafe")]).codeModePath).toBe("tools.typesafe.decide")
-  })
-
-  test("prefers the typesafe namespace when several decide-shaped ids exist", () => {
-    const out = resolveDecidePath([entry("other_decide", "other"), entry("typesafe_decide", "typesafe")])
-    expect(out.id).toBe("typesafe_decide")
+  test("#3 typesafe beats a bare decide, and names the ambiguity", () => {
+    const out = resolveOne([entry("decide"), entry("typesafe_decide", "typesafe")])
     expect(out.codeModePath).toBe("tools.typesafe.decide")
+    expect(out.note).toContain("other decide-shaped")
+  })
+
+  test("#3 the ranking is deterministic regardless of catalog order", () => {
+    const forward = resolveOne([entry("typesafe_decide", "typesafe"), entry("decide"), entry("zzz_decide")])
+    const reversed = resolveOne([entry("zzz_decide"), entry("decide"), entry("typesafe_decide", "typesafe")])
+    expect(forward.codeModePath).toBe("tools.typesafe.decide")
+    expect(reversed.codeModePath).toBe("tools.typesafe.decide")
   })
 
   test("THE BUG: present only in the later ctx.tool.list() view → still found", () => {
@@ -232,30 +262,87 @@ describe("decide detection", () => {
     expect(decideViews(state).map((v) => v.name)).toEqual(["ctx.tool.list()", "transform-post", "transform-pre"])
   })
 
-  test("CLI: decide only in the ctx.tool.list() view is reported, not denied", () => {
+  test("#7 checked lists every view even when the match is in the first", () => {
+    const views: CatalogView[] = [
+      { name: "ctx.tool.list()", entries: [entry("typesafe_decide", "typesafe")] },
+      { name: "transform-post", entries: [entry("read")] },
+      { name: "transform-pre", entries: [] },
+    ]
+    const out = resolveDecide(views)
+    expect(out.checked?.map((c) => c.view)).toEqual(["ctx.tool.list()", "transform-post", "transform-pre"])
+    expect(out.checked?.[1]?.entries).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The stored `state.decide` field of an old record must never leak the false
+// accusation into the CLI output — neither the report nor --json.
+// ---------------------------------------------------------------------------
+
+const OLD_ACCUSATION = {
+  found: false,
+  note: "decide tool not in the catalog — the main plugin (src/index.ts) is not loaded in this host.",
+}
+
+const stateFromOldPlugin = () =>
+  makeState({
+    decide: OLD_ACCUSATION,
+    transform: { runs: 1, pre: [entry("read")], post: [entry("read")], report: { flipped: [], already: [], skipped: [] } },
+    catalogAfterTransforms: {
+      at: new Date().toISOString(),
+      entries: [entry("read"), entry("typesafe_decide", "typesafe")],
+    },
+  })
+
+describe("live-builtins CLI: decide honesty (#1, #6)", () => {
+  test("#6 a stored false accusation is ignored; the report shows the resolved path", () => {
+    const file = tmpStateFile()
+    writeFileSync(file, JSON.stringify(stateFromOldPlugin()))
+    const result = out(runCli(file))
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("tools.typesafe.decide")
+    expect(result.stdout).toContain("seen in: ctx.tool.list()")
+    expect(result.stdout).not.toContain("not loaded")
+  })
+
+  test("#1 --json also carries the recomputed decide, not the stale accusation", () => {
+    const file = tmpStateFile()
+    writeFileSync(file, JSON.stringify(stateFromOldPlugin()))
+    const result = out(runCli(file, ["--json"]))
+    expect(result.code).toBe(0)
+    expect(result.stdout).not.toContain("not loaded")
+    const record = JSON.parse(result.stdout)
+    expect(record.decide.found).toBe(true)
+    expect(record.decide.codeModePath).toBe("tools.typesafe.decide")
+    // The rest of the raw record is preserved alongside the recomputed field.
+    expect(record.pluginId).toBe("codemode-builtins-probe")
+    expect(record.catalogAfterTransforms.entries.length).toBe(2)
+    expect(record.transform.runs).toBe(1)
+  })
+
+  test("#6 a not-captured view renders as 'not captured' in section (4)", () => {
     const file = tmpStateFile()
     writeFileSync(
       file,
       JSON.stringify(
         makeState({
           transform: { runs: 1, pre: [entry("read")], post: [entry("read")], report: { flipped: [], already: [], skipped: [] } },
-          catalogAfterTransforms: { at: new Date().toISOString(), entries: [entry("read"), entry("typesafe_decide", "typesafe")] },
+          catalogAfterTransforms: null,
         }),
       ),
     )
     const result = out(runCli(file))
     expect(result.code).toBe(0)
-    expect(result.stdout).toContain("tools.typesafe.decide")
-    expect(result.stdout).toContain("ctx.tool.list()")
-    expect(result.stdout).not.toContain("not loaded")
+    expect(result.stdout).toContain("ctx.tool.list(): not captured")
   })
 
-  test("CLI: decide absent from every view says UNKNOWN and never claims 'not loaded'", () => {
+  test("#6 decide absent from every view says UNKNOWN and never claims 'not loaded'", () => {
     const file = tmpStateFile()
     writeFileSync(
       file,
       JSON.stringify(
         makeState({
+          decide: OLD_ACCUSATION,
           transform: { runs: 1, pre: [entry("read")], post: [entry("read")], report: { flipped: [], already: [], skipped: [] } },
           catalogAfterTransforms: { at: new Date().toISOString(), entries: [entry("read")] },
         }),
