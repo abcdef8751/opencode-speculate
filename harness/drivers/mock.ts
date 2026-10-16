@@ -29,6 +29,17 @@
  *   `read({ path })`, `glob({ pattern })`, `grep({ pattern, path })`, `write({ path, content })`,
  *   `shell({ command })`. Output is read leniently (string, or `{content|text}`, `{files|matches|paths}`).
  *   If worker D1's sandbox uses different inputs, callers can override any arm via `programs`.
+ *
+ * DECIDE CALL SHAPE (arm C)
+ *   `docs/CONTRACTS.md` §1 is overloaded on the *input* shape, and scripts pass the §1 shape —
+ *   the Jev/`SystemOneRequest` id-keyed map is produced *inside* the tool, never by a script:
+ *       decide(state, { mode, id, … })      -> DecideVerdict      (single question object)
+ *       decide(state, [{ mode, id, … }])    -> DecideVerdict[]    (array of questions)
+ *   The canned program sends a one-element array (the batch form) and reads `verdicts[0]` so the
+ *   plan's `if (d.escalate) { …; break }` handler still has a single verdict to inspect.
+ *   The question `id` must match a key in the task's duck-typed `judgeAnswers` (see
+ *   `harness/tasks/*.ts`), which D1's orchestrator feeds to the offline fake judge. The fake judge
+ *   throws on unscripted ids, on purpose.
  */
 import type {
   ArmID,
@@ -428,63 +439,98 @@ const GENERIC_PROGRAM = [
   "return { ok: true, discovered: paths.length };",
 ];
 
-/** The `decide` + `break` handler demanded by the arm-C prompt, in the plan's shape. */
-const decideLoop = (stateExpr: string, iterable: string): string[] => [
-  "const done = [];",
-  `for (const item of ${iterable}) {`,
-  "  const d = await tools.typesafe.decide({",
-  `    state: ${stateExpr},`,
-  "    questions: { actionable: { mode: \"noul\", id: \"actionable\", criterion: \"Is this item safe to finalize?\", criteria: { true: \"yes\", false: \"no\" } } },",
-  "  });",
-  "  done.push(item);",
-  '  if (d.escalate) { console.log("[escalate]", d.reason, item); break }',
-  "}",
-  'console.log("[decide] checked", done.length, "items");',
-];
+/** Question id used by every canned arm-C program; must match each task's `judgeAnswers`. */
+export const MOCK_DECIDE_QUESTION_ID = "actionable";
 
-const buildProgram = (
-  body: string[],
-  c: boolean,
-  loopIterable: string,
-  stateExpr: string,
-): string => {
+/** Per-task configuration of the canned arm-C `decide` loop. */
+export interface DecideLoopOptions {
+  /** The `for (const item of …)` iterable expression (a literal array). */
+  iterable: string;
+  /** The `state:` expression passed to `decide`. */
+  stateExpr: string;
+  /** Optional call-level threshold; when set the task is the one designed to escalate. */
+  escalateBelow?: number;
+}
+
+/**
+ * The `decide` + `break` handler demanded by the arm-C prompt, in the plan's shape.
+ *
+ * The questions payload is the §1 shape: an ARRAY of question objects. (An id-keyed map is the
+ * *wire* shape produced inside the tool — passing it here makes `mode`/`id` undefined and worker
+ * A's validator throws.) Because an array input yields `DecideVerdict[]` (§1), the program reads
+ * `verdicts[0]` before running the plan's `if (d.escalate) { …; break }` handler.
+ */
+const decideLoop = (opts: DecideLoopOptions): string[] => {
+  const id = JSON.stringify(MOCK_DECIDE_QUESTION_ID);
+  const criterion = JSON.stringify("Is this item safe to finalize?");
+  return [
+    "const done = [];",
+    `for (const item of ${opts.iterable}) {`,
+    "  const verdicts = await tools.typesafe.decide({",
+    `    state: ${opts.stateExpr},`,
+    "    questions: [",
+    `      { mode: "noul", id: ${id}, criterion: ${criterion}, criteria: { true: "yes", false: "no" } },`,
+    "    ],",
+    ...(opts.escalateBelow === undefined ? [] : [`    escalateBelow: ${opts.escalateBelow},`]),
+    "  });",
+    "  const d = verdicts[0];",
+    "  done.push(item);",
+    '  if (d.escalate) { console.log("[escalate]", d.reason, item); break }',
+    "}",
+    'console.log("[decide] checked", done.length, "items");',
+  ];
+};
+
+const buildProgram = (body: string[], loop?: DecideLoopOptions): string => {
   const lines = [
     "// SYNTHETIC canned Code Mode program (mock driver).",
     ...PROGRAM_PRELUDE,
     "",
     ...body,
   ];
-  if (c) {
+  if (loop !== undefined) {
     // Insert the decide loop *before* the program's own final `return`, otherwise it is
     // dead code.
     const lastReturn = lines.reduce((acc, l, i) => (l.startsWith("return") ? i : acc), -1);
-    const loop = decideLoop(stateExpr, loopIterable);
-    if (lastReturn >= 0) lines.splice(lastReturn, 0, "", ...loop, "");
-    else lines.push("", ...loop);
+    const decide = decideLoop(loop);
+    if (lastReturn >= 0) lines.splice(lastReturn, 0, "", ...decide, "");
+    else lines.push("", ...decide);
   }
   return lines.join("\n");
 };
 
+/**
+ * Canned Code Mode programs, per task and per script arm.
+ *
+ * `log-triage` is the one task designed to ESCALATE: its arm-C loop passes `escalateBelow: 0.5`
+ * and its `judgeAnswers` script a low-confidence `noul` (`0.55` => confidence `|2p-1| = 0.1`), so
+ * the `if (d.escalate) { …; break }` path runs end-to-end. Every other task omits `escalateBelow`
+ * (no threshold => §1 never escalates), so both branches are covered.
+ */
 export const MOCK_PROGRAMS: Record<string, { B: string; C: string }> = {
   "fix-median": {
-    B: buildProgram(programFixMedian, false, "[]", "null"),
-    C: buildProgram(programFixMedian, true, '["src/stats.mjs"]', '({ file: item })'),
+    B: buildProgram(programFixMedian),
+    C: buildProgram(programFixMedian, { iterable: '["src/stats.mjs"]', stateExpr: "({ file: item })" }),
   },
   "migrate-config": {
-    B: buildProgram(programMigrateConfig, false, "[]", "null"),
-    C: buildProgram(programMigrateConfig, true, '["config.json"]', '({ file: item })'),
+    B: buildProgram(programMigrateConfig),
+    C: buildProgram(programMigrateConfig, { iterable: '["config.json"]', stateExpr: "({ file: item })" }),
   },
   "rename-symbol": {
-    B: buildProgram(programRenameSymbol, false, "[]", "null"),
-    C: buildProgram(programRenameSymbol, true, '["pkg/core.mjs"]', '({ file: item })'),
+    B: buildProgram(programRenameSymbol),
+    C: buildProgram(programRenameSymbol, { iterable: '["pkg/core.mjs"]', stateExpr: "({ file: item })" }),
   },
   "log-triage": {
-    B: buildProgram(programLogTriage, false, "[]", "null"),
-    C: buildProgram(programLogTriage, true, '["logs/2026-10-01.api.log.txt"]', '({ file: item, codes })'),
+    B: buildProgram(programLogTriage),
+    C: buildProgram(programLogTriage, {
+      iterable: '["logs/2026-10-01.api.log.txt"]',
+      stateExpr: "({ file: item, codes })",
+      escalateBelow: 0.5,
+    }),
   },
   "deprecated-audit": {
-    B: buildProgram(programDeprecatedAudit, false, "[]", "null"),
-    C: buildProgram(programDeprecatedAudit, true, '["src/http.mjs"]', '({ file: item })'),
+    B: buildProgram(programDeprecatedAudit),
+    C: buildProgram(programDeprecatedAudit, { iterable: '["src/http.mjs"]', stateExpr: "({ file: item })" }),
   },
 };
 
