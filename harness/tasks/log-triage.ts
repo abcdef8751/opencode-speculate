@@ -41,8 +41,15 @@ export const logTriage: TaskWithJudgeAnswers = {
    * THIS is the task designed to escalate: `noul: 0.55` => confidence `|2p-1| = 0.1`, and the
    * canned decide call passes `escalateBelow: 0.5`, so `d.escalate` is true and the program's
    * `break` runs.
+   *
+   * Both ids are scripted: `actionable` is what the canned program sends, `triage` is what the
+   * arm-C prompt teaches — so a live model following its prompt does not trip the fake judge's
+   * fail-loud path either.
    */
-  judgeAnswers: { actionable: { noul: 0.55, confidence: 0.9 } },
+  judgeAnswers: {
+    actionable: { noul: 0.55, confidence: 0.9 },
+    triage: { noul: 0.55, confidence: 0.9 },
+  },
   prompt: [
     "You are working in a small service-log corpus under `logs/`.",
     "Read the logs under `logs/` and produce the error triage artefact described below.",
@@ -60,7 +67,9 @@ export const logTriage: TaskWithJudgeAnswers = {
   ].join("\n"),
   escalationPrompt: [
     "Arm C extra requirement — you must use the `decide` tool inside the program:",
-    "  * `const d = await tools.typesafe.decide({ state, questions: { triage: { mode: \"noul\", id: \"triage\", criterion: \"...\", criteria: { true: \"...\", false: \"...\" } } } })`",
+    "  * `const verdicts = await tools.typesafe.decide({ state, questions: [{ mode: \"noul\", id: \"triage\", criterion: \"...\", criteria: { true: \"...\", false: \"...\" } }], escalateBelow: 0.5 })`",
+    "    `questions` is an ARRAY of question objects (the §1 script-facing shape); one question in gives an array holding one verdict back.",
+    "  * `const d = verdicts[0];` — the single verdict the handler below inspects.",
     "  * call it at least once while iterating the logs,",
     "  * keep a `done` ledger of what you have processed,",
     "  * and include the escalation handler verbatim in shape: `if (d.escalate) { console.log(\"[escalate]\", d.reason); break }`,",
