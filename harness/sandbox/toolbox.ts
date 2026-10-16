@@ -1,9 +1,10 @@
 /**
  * The harness `ToolBox`: six fs/shell built-ins confined to a per-run scratch directory.
  *
- * This is *measurement scaffolding*, not a security boundary. It exists so the three arms can be
- * compared against the same, deterministic tool surface. See `harness/README.md` for the honest
- * limitations (TOCTOU, symlink races, no seccomp, no mount isolation).
+ * This is *measurement scaffolding*, not a security boundary. It refuses textual escapes, symlinked
+ * parents and symlinked write targets, and it exposes no network — but it is not race-free and has
+ * no OS-level isolation. See `harness/README.md` for the exact residual limitations (TOCTOU, hard
+ * links, no seccomp, no mount isolation).
  *
  * Two shapes are produced from the same implementations:
  *   - `descriptors` / `call()` for arm A (the model calls tools turn by turn);
@@ -65,8 +66,12 @@ export function resolveInside(dir: string, relative: unknown): string {
 }
 
 /**
- * Stronger, still best-effort check: the deepest *existing* ancestor of `abs` must resolve
- * (through symlinks) to a location inside `dir`. Catches the common symlink escape.
+ * Best-effort check that a path inside `dir` does not resolve (through symlinks) outside it: the
+ * deepest *existing* ancestor of `abs` must resolve inside. Used for read targets and for the parent
+ * of write/edit targets; the write target itself is checked separately by `assertSafeWriteTarget`.
+ *
+ * Not race-free: a symlink created between this check and the following `fs` call (TOCTOU) can still
+ * win. See `harness/README.md` "Confinement".
  */
 async function assertRealInside(dir: string, abs: string): Promise<void> {
   const realRoot = await fs.realpath(path.resolve(dir));
