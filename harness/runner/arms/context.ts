@@ -80,7 +80,11 @@ export interface ArmMarker {
 
 const ARM_MARKER = /harness:arm=(A|B|C);task=([^;\s]+);run=(\d+)/;
 
-/** Reads the arm marker a driver needs to pick the right canned behaviour. */
+/**
+ * Reads the informational `harness:arm=…;task=…;run=…` marker out of a system message.
+ * Used by the harness's own tests and for debugging transcripts; a driver is not required to
+ * parse it (see the module header and `harness/README.md` § "Driver conventions").
+ */
 export function parseArmMarker(text: string | undefined): ArmMarker | undefined {
   if (text === undefined) return undefined;
   const match = ARM_MARKER.exec(text);

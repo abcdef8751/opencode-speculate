@@ -75,8 +75,8 @@ and the exports it must provide, and it never substitutes a stand-in. A module t
 exports the wrong shape fails the same way. Only "module not found" is treated as the missing-file
 case; any other load error (a syntax error, a missing transitive dependency) is rethrown as-is.
 
-The loaded set is printed on stderr with `--list` and recorded in `report.md` as
-`modules: tasks=module drivers=module decide=module`; the CLI also prints non-fatal warnings (for
+The loaded set is recorded in `report.md` and printed after a run as
+`modules: tasks=module drivers=module decide=module`; `--list` prints only non-fatal warnings (for
 example a `DECIDE_NAMESPACE` mismatch).
 
 Because the offline fake judge (`harness/drivers/fake-judge.ts`) **throws** for question ids it has
