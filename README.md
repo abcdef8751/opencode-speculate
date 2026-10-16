@@ -8,7 +8,8 @@ cache re-reads at equal-or-better correctness.
 Loading it into a host is a separate, deliberate step — and on this machine it is **done**: the
 plugin is registered globally through the discovery shim
 `~/.config/opencode/plugins/codemode-decide.ts` → `src/index.ts`, and the builtins flip is enabled
-**per project** (`/home/rp/opencode-speculate/.env`), not globally. `AGENTS.md` → "Host config changed
+**globally** (`~/.config/opencode/.env`), so on this machine no session has the six built-ins as direct
+tools — this repo's own `.env` still pins the same value redundantly. `AGENTS.md` → "Host config changed
 by this project" lists every change outside the repo and how to reverse each one.
 
 ## Layout
@@ -50,7 +51,8 @@ used — see the measured finding below. The key is resolved from `OPENCODE_API_
 - **Measured live 2026-10-16 (was an assumption before):** the flip **removes** a built-in from the
   agent's direct tool list — it does not duplicate it. Across the 7 requests the probe captured with
   the flip on, the direct list was exactly `question, skill, subagent, webfetch, websearch, execute`;
-  none of the six. That either/or result is why the flip is scoped to a single project. A nested
+  none of the six. That either/or result is the price of the flip: it was repo-scoped at first, and is now
+enabled globally at the user's request, so every session reaches those tools through Code Mode only. A nested
   `read` from a Code Mode script does reach the host's tool pipeline, where the leaf permission check
   is applied; whether the approval *prompt* is shown is human-observed in the TUI and is the one item
   still open (`docs/live-probes.md`).

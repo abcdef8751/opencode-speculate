@@ -29,16 +29,16 @@ they were).
 | Path | Change | To reverse |
 | --- | --- | --- |
 | `~/.config/opencode/plugins/codemode-decide.ts` | **Created** 2026-10-16 — discovery shim: `export { default } from "/home/rp/opencode-speculate/src/index.ts"`. V2 loads plugins only by discovery in this directory, so without the file `decide` does not exist at all. | `rm` it, then `opencode reload` |
-| `~/.config/opencode/.env` | **Created** — `OPENCODE_DECIDE_BUILTINS_CODEMODE=0` (built-ins **not** flipped globally) and `OPENCODE_API_KEY=` (empty ⇒ resolution falls through to `~/.local/share/opencode/auth.json`; **no key is stored in any file we changed**). The contents are entirely ours; if an `.env` existed here before, it was overwritten. | `rm` it (or delete both keys), then `opencode reload` |
+| `~/.config/opencode/.env` | **Created**, then set to `OPENCODE_DECIDE_BUILTINS_CODEMODE=1` on 2026-10-16 (built-ins flipped **globally** — user's call) and `OPENCODE_API_KEY=` (empty ⇒ resolution falls through to `~/.local/share/opencode/auth.json`; **no key is stored in any file we changed**). The contents are entirely ours; if an `.env` existed here before, it was overwritten. | `rm` it (or delete both keys), then `opencode reload` |
 | `~/.config/opencode/AGENTS.md` | **Appended** one paragraph — the trailing "`decide()` — TypeSafe/Jev fuzzy judgement…" block. | delete that paragraph |
-| `/home/rp/opencode-speculate/.env` | **Created**, gitignored (`.gitignore` line 4) — `OPENCODE_DECIDE_BUILTINS_CODEMODE=1`, flipping the six built-ins **only** for sessions rooted in this repo. | set to `0` or `rm` it, then `opencode reload` |
+| `/home/rp/opencode-speculate/.env` | **Created**, gitignored (`.gitignore` line 4) — `OPENCODE_DECIDE_BUILTINS_CODEMODE=1`. Redundant since the global flag became 1; kept as an explicit pin and as the place to flip this project alone. While it exists the global `.env` is **not** read here (first existing file wins, no merge). | set to `0` or `rm` it to fall back to the global file, then `opencode reload` |
 
-Why the flip is repo-scoped, not global (measured live 2026-10-16, not assumed): `codemode: true`
-**moves** a built-in off the agent's direct tool list into the Code Mode sandbox — it does not
-duplicate it (either/or). Enabling it globally would remove direct `read`/`grep`/`glob`/`shell`/`edit`/`write`
-from every session on the machine.
+Why this is a real trade (measured live 2026-10-16, not assumed): `codemode: true` **moves** a built-in
+off the agent's direct tool list into the Code Mode sandbox — it does not duplicate it (either/or). The
+flip was repo-scoped at first for that reason; it is now **global at the user's request**, which means
+no session on this machine has direct `read`/`grep`/`glob`/`shell`/`edit`/`write`.
 
-Consequence for agents **in this repo**: there are no direct file/shell tools — reach them inside
+Consequence for agents **on this host** (every session, since the flip is global): there are no direct file/shell tools — reach them inside
 `execute` via `tools.read({ path })`, `tools.shell({ command })`, `tools.edit({ path, oldString, newString })`,
 `tools.write({ path, content })`, `tools.grep({ pattern, path })`, `tools.glob({ pattern, path })`.
 
