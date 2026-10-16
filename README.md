@@ -5,8 +5,11 @@ Implementation of `~/.opencode/plan/codemode-decide-v1.md` (steps 1–4): a stat
 measures whether collapsing a tool-call loop into one Code Mode script actually reduces main-model
 cache re-reads at equal-or-better correctness.
 
-Nothing here is registered in the live host yet. `src/index.ts` (the plugin entry) is wired at
-integration time; loading it globally is a separate, deliberate step (`docs/live-probes.md`).
+Loading it into a host is a separate, deliberate step — and on this machine it is **done**: the
+plugin is registered globally through the discovery shim
+`~/.config/opencode/plugins/codemode-decide.ts` → `src/index.ts`, and the builtins flip is enabled
+**per project** (`/home/rp/opencode-speculate/.env`), not globally. `AGENTS.md` → "Host config changed
+by this project" lists every change outside the repo and how to reverse each one.
 
 ## Layout
 
@@ -43,10 +46,14 @@ used — see the measured finding below. The key is resolved from `OPENCODE_API_
 - Plugin tools land in Code Mode, not the native tool list — the vendored ensemble plugin hit this
   live (`~/.config/opencode/plugins/opencode-ensemble/src/v2-setup.ts`).
 - Built-ins ship `options: { codemode: false }`, so they are *not* in the sandbox by default;
-  flipping the option is a supported plugin transform. Nested calls execute the captured tool, so
-  its leaf policy *should* still authorize — **assumption, not yet verified: see
-  `docs/live-probes.md`**, which is what settles it (and whether the flip removes the tool from the
-  agent's direct list).
+  flipping the option is a supported plugin transform.
+- **Measured live 2026-10-16 (was an assumption before):** the flip **removes** a built-in from the
+  agent's direct tool list — it does not duplicate it. Across the 7 requests the probe captured with
+  the flip on, the direct list was exactly `question, skill, subagent, webfetch, websearch, execute`;
+  none of the six. That either/or result is why the flip is scoped to a single project. A nested
+  `read` from a Code Mode script does reach the host's tool pipeline, where the leaf permission check
+  is applied; whether the approval *prompt* is shown is human-observed in the TUI and is the one item
+  still open (`docs/live-probes.md`).
 - `tools.<anything>` is a callable stub: `typeof` lies, only calling reveals absence.
 - The interpreter has no `import`/`process`; `throw`/`try`/`catch` work, and `Error` carries
   `message`. Payloads must be JSON in the message.
