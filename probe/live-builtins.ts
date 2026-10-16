@@ -93,9 +93,16 @@ export interface DecideResolution {
    */
   checked?: { view: CatalogViewName; entries: number | null }[]
   /**
-   * decide-shaped ids that were seen but cannot be turned into a call path (their
-   * prefix is not a single identifier segment). Presence here means the tool may
-   * exist — it is *not* evidence of absence.
+   * decide-shaped ids that were seen but cannot be turned into a call path: either
+   * the prefix before `decide` is not a single separator-free identifier segment
+   * (`a_b_decide`) or there is no namespace segment at all (`_decide`, `.decide`,
+   * `/decide`). This is the union across *every* view consulted, not one view's list,
+   * and an id that also resolves is never listed here — an id is never reported as
+   * both matched and not-derivable.
+   *
+   * Deliberately omitted (rather than an empty array) when nothing was seen but not
+   * derivable, so its presence in `--json` is itself the signal. Presence means the
+   * tool may exist — it is *not* evidence of absence.
    */
   unresolved?: { id: string; reason: string }[]
   /** Human sentence. When `found` is false this says *unknown*, never a cause. */
@@ -333,32 +340,38 @@ function describeDecide(
   source: CatalogViewName,
   checked: { view: CatalogViewName; entries: number | null }[],
 ): DecideResolution {
-  const { best, others, unresolved } = pick
+  const { best, others } = pick
+  // An id that also resolves (as `best` or an alternative) must never be reported as
+  // not-derivable too: one spelling can classify differently across views when
+  // `options.namespace` differs, so drop those ids here, where the resolved set is
+  // known. This keeps the union honest: never both matched and not-derivable.
+  const resolvedIds = new Set<string>([best.entry.id, ...others.map((o) => o.entry.id)])
+  const unresolved = pick.unresolved.filter((u) => !resolvedIds.has(u.id))
   const nsText =
     best.namespace === undefined
       ? "no namespace"
       : `namespace "${best.namespace}"${best.namespaceFrom === "id" ? " (derived from the id)" : ""}`
   // Only an alternative that resolves to a *different* call path is a real
   // ambiguity; two spellings that both yield best.path are not. Group the rest by
-  // path so the count is of distinct targets, not of ids: two spellings of the same
-  // non-best path count and list once (all their ids shown together).
-  const alternatives = new Map<string, string[]>()
+  // path, with a per-path dedupe, so the count is of distinct targets not ids and
+  // each path lists each id exactly once (all of its ids shown together).
+  const alternatives = new Map<string, Set<string>>()
   for (const o of others) {
     if (o.path === best.path) continue
-    const ids = alternatives.get(o.path) ?? []
-    ids.push(o.entry.id)
+    const ids = alternatives.get(o.path) ?? new Set<string>()
+    ids.add(o.entry.id)
     alternatives.set(o.path, ids)
   }
   const ambiguity =
     alternatives.size === 0
       ? ""
       : ` — ${alternatives.size} other resolve target(s) in this view (${[...alternatives]
-          .map(([path, ids]) => `${ids.map((id) => `"${id}"`).join(", ")} → ${path}`)
+          .map(([path, ids]) => `${[...ids].map((id) => `"${id}"`).join(", ")} → ${path}`)
           .join("; ")}); picked by rank typesafe > bare decide > other namespace`
   const seenNotDerivable =
     unresolved.length === 0
       ? ""
-      : `; ${unresolved.length} decide-shaped id(s) seen but not derivable (${unresolved.map((u) => `"${u.id}"`).join(", ")})`
+      : `; ${unresolved.length} decide-shaped id(s) seen but not derivable (${unresolved.map((u) => `"${u.id}"`).join(", ")}); it may be an unrelated tool that merely ends in "decide"`
   return {
     found: true,
     id: best.entry.id,
@@ -366,6 +379,8 @@ function describeDecide(
     codeModePath: best.path,
     source,
     checked,
+    // Deliberately omitted (not an empty array) when empty: its presence in
+    // `--json` is the signal for seen-but-not-derivable (see the `unresolved` JSDoc).
     unresolved: unresolved.length === 0 ? undefined : unresolved,
     note: `matched catalog id "${best.entry.id}" (${nsText}) in the ${source} view → call it as ${best.path}${ambiguity}${seenNotDerivable}`,
   }
@@ -414,7 +429,8 @@ export function decideViews(state: ProbeState): CatalogView[] {
  * more complete earlier view is never dropped when a later view resolves; only
  * `others` stays view-scoped. If no view yields a resolvable candidate but any view
  * held such an id, `found` is false and the note says "seen but not derivable"
- * instead of "not visible".
+ * instead of "not visible". An id that resolves in the returned view is filtered out
+ * of that union, so one id is never reported as both matched and not-derivable.
  */
 export function resolveDecide(views: CatalogView[]): DecideResolution {
   // Record every view up front (no truncation on early return) so the report can

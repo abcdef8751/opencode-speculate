@@ -276,6 +276,30 @@ describe("decide detection", () => {
     expect(out.unresolved?.map((u) => u.id)).toEqual(["a_b_decide"])
     expect(out.note).toContain("seen but not derivable")
     expect(out.note).toContain("a_b_decide")
+    // nit 5: the fragment carries the same caveat as the other two texts.
+    expect(out.note).toContain("unrelated tool that merely ends in")
+  })
+
+  test("nit 2 an id is never both matched and not-derivable when a view disagrees on its namespace", () => {
+    const views: CatalogView[] = [
+      { name: "transform-post", entries: [entry("a_b_decide")] },
+      { name: "transform-pre", entries: [entry("a_b_decide", "a_b")] },
+    ]
+    const out = resolveDecide(views)
+    expect(out.found).toBe(true)
+    expect(out.codeModePath).toBe("tools.a_b.decide")
+    // The id resolved in the later view, so it must not also be unioned as unresolved.
+    expect(out.unresolved).toBeUndefined()
+    expect(out.note).not.toContain("seen but not derivable")
+    expect(out.note).toContain('matched catalog id "a_b_decide"')
+  })
+
+  test("nit 3 a path lists each id once even with duplicate catalog entries", () => {
+    const out = resolveOne([entry("decide"), entry("foo_decide"), entry("foo_decide")])
+    expect(out.codeModePath).toBe("tools.decide")
+    expect(out.note).toContain('"foo_decide" → tools.foo.decide')
+    expect(out.note).not.toContain('"foo_decide", "foo_decide"')
+    expect(out.note.match(/"foo_decide"/g)?.length ?? 0).toBe(1)
   })
 
   test("#1 siblings that share the chosen target's path are not an ambiguity", () => {
@@ -499,6 +523,12 @@ describe("live-builtins CLI: decide honesty (#1, #6)", () => {
     expect(result.stdout).toContain("seen but not derivable")
     // nit 5: the summary surfaces unresolved siblings on the found:true path too.
     expect(result.stdout).toContain("decide-shaped ids seen but not derivable: [a_b_decide]")
+
+    // nit 7: the same union is asserted on the --json path for this found:true state.
+    const json = out(runCli(file, ["--json"]))
+    expect(json.code).toBe(0)
+    expect(JSON.parse(json.stdout).decide.found).toBe(true)
+    expect(JSON.parse(json.stdout).decide.unresolved[0].id).toBe("a_b_decide")
   })
 
   test("gap: --json omits `unresolved` when nothing was seen-but-not-derivable", () => {
