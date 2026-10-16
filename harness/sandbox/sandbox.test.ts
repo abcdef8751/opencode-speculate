@@ -227,6 +227,22 @@ describe("code mode sandbox", () => {
     expect(net.value).toEqual({ fetch: "undefined", process: "undefined" });
   });
 
+  test("the CodeMode runtime's own `search` global discovers the sandbox tools", async () => {
+    const box = createToolBox({ dir: await scratch(), names: ["read", "write"] });
+    const result = await executeScript({
+      toolbox: box,
+      decide: stubDecide,
+      code: `const a = await search({ query: "read" }); const b = await search({ query: "decide" }); return { a, b };`,
+      limits: { timeoutMs: 5000 },
+    });
+    expect(result.ok).toBe(true);
+    const value = result.value as { a: { items: { path: string }[] }; b: { items: { path: string }[] } };
+    const paths = [...(value.a.items ?? []), ...(value.b.items ?? [])].map((item) => item.path);
+    expect(paths).toContain("tools.read");
+    expect(paths).toContain("tools.typesafe.decide");
+    expect(paths).not.toContain("tools.write"); // excluded by `names`
+  });
+
   test("tool call limit is enforced as a script failure", async () => {
     const dir = await scratch();
     await fs.writeFile(path.join(dir, "a.txt"), "a", "utf8");

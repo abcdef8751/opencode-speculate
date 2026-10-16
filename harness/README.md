@@ -138,6 +138,10 @@ The toolbox is exposed in two shapes:
 - the Code Mode tool tree (via `executeScript`) for arms B/C, with `typesafe.decide` mounted from
   the §1 plugin tool when a decide runtime is supplied.
 
+Search-equivalent discoverability needs no extra work: the CodeMode runtime provides the `search`
+global itself, and it reports the sandbox tree (`search({ query: "decide" })` →
+`tools.typesafe.decide`), asserted by a sandbox test.
+
 Implementation notes:
 
 - built on `node:fs/promises` + `node:child_process` `execFile` with `cwd: dir`, an explicit
