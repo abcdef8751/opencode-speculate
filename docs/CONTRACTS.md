@@ -171,6 +171,10 @@ export interface DecideVerdict {
   legitimate coin-flip `noul`), so caching one would let a later read silently downgrade
   `escalate: true` to `false` and trust a placeholder `value`. A cached entry therefore always
   carries a trustworthy `confidence`.
+  Note (2026-10-16, worker A): the `id`/`mode` cross-check lives in the reader (`runDecide`), not in
+  `parseCachedVerdict` itself — which cannot perform it, having no question to compare against. It is
+  non-bypassable only because `runDecide` is the sole cache reader. **Any future code that reads the
+  cache directly must repeat the cross-check.**
 - **Decision log.** Register one entry per `decide` call (not per question) through the injected
   `log` sink: `{ at, modelId, latencyMs, cached, questionIds, verdicts, usage }` (`at` = epoch ms),
   JSON-safe. The plugin wires this into `ctx.storage` (keys `decide/log/<iso>-<sha8>`; if that key is
