@@ -437,7 +437,10 @@ export function toCachedVerdict(verdict: DecideVerdict): CachedVerdict {
 }
 
 function isNumberRecord(value: unknown): value is Record<string, number> {
-  return isPlainObject(value) && Object.values(value).every((v) => typeof v === "number")
+  return (
+    isPlainObject(value) &&
+    Object.values(value).every((v) => typeof v === "number" && Number.isFinite(v))
+  )
 }
 
 /** Tolerant read-side validator: a corrupt/old entry is simply a cache miss. */
@@ -449,8 +452,8 @@ export function parseCachedVerdict(raw: Json | undefined): CachedVerdict | undef
     return undefined
   }
   const value = record.value
-  if (typeof value !== "boolean" && typeof value !== "string" && typeof value !== "number") {
-    return undefined
+  if (typeof value !== "boolean" && typeof value !== "string") {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined
   }
   if (typeof record.confidence !== "number" || !Number.isFinite(record.confidence)) {
     return undefined
