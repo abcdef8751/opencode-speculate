@@ -98,6 +98,134 @@ async function solve(task: TaskDef, dir: string): Promise<void> {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Prompt-shape guards
+ *
+ * The arm-C prompts teach a model how to call `decide`. docs/CONTRACTS.md §1 defines
+ * `questions: DecideQuestion | DecideQuestion[]` — the *script-facing* shape. The id-keyed map
+ * (`{ triage: { mode, id } }`) is the internal Jev *wire* shape the tool builds and sends;
+ * passing it as `questions` makes `mode`/`id` undefined and worker A's validator throws
+ * (`decide: question at index 0 needs a non-empty string "id"`). Substring-only assertions are
+ * what let that slip through before, so these helpers inspect the literal's SHAPE.
+ * ------------------------------------------------------------------ */
+
+export type QuestionsShape = "array" | "single-question" | "id-keyed-map" | "unrecognised";
+
+const PROMPT_FIELDS = ["prompt", "scriptPrompt", "escalationPrompt"] as const;
+
+/** Every `questions: <literal>` sample in `text`, with brackets balanced and strings skipped. */
+export function questionsLiterals(text: string): string[] {
+  const found: string[] = [];
+  const marker = /questions:\s*/g;
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(text)) !== null) {
+    const start = match.index + match[0].length;
+    const first = text[start];
+    if (first !== "[" && first !== "{") continue;
+    let depth = 0;
+    let quote: string | undefined;
+    let i = start;
+    for (; i < text.length; i += 1) {
+      const ch = text[i] as string;
+      if (quote !== undefined) {
+        if (ch === "\\") {
+          i += 1;
+          continue;
+        }
+        if (ch === quote) quote = undefined;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+        continue;
+      }
+      if (ch === "[" || ch === "{" || ch === "(") depth += 1;
+      else if (ch === "]" || ch === "}" || ch === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          i += 1;
+          break;
+        }
+      }
+    }
+    found.push(text.slice(start, i));
+    marker.lastIndex = i;
+  }
+  return found;
+}
+
+export function classifyQuestionsLiteral(literal: string): QuestionsShape {
+  const body = literal.trim();
+  if (body.startsWith("[")) return "array";
+  // A bare §1 question object starts with `mode`/`id`.
+  if (/^\{\s*(mode|id)\s*[,:}\s]/.test(body)) return "single-question";
+  // The wire map: `{ <id>: { mode, … } }`.
+  if (/^\{\s*[A-Za-z_$][\w$]*\s*:\s*\{/.test(body)) return "id-keyed-map";
+  return "unrecognised";
+}
+
+/** Every `id: "<value>"` inside a questions literal. */
+export function questionIds(literal: string): string[] {
+  const out: string[] = [];
+  for (const m of literal.matchAll(/\bid\s*:\s*"([^"]*)"/g)) out.push(m[1] ?? "");
+  return out;
+}
+
+interface PromptSample {
+  taskId: string;
+  field: string;
+  literal: string;
+  shape: QuestionsShape;
+}
+
+function promptSamples(): PromptSample[] {
+  const out: PromptSample[] = [];
+  for (const task of TASKS) {
+    for (const field of PROMPT_FIELDS) {
+      const text = task[field];
+      if (typeof text !== "string") continue;
+      for (const literal of questionsLiterals(text)) {
+        out.push({ taskId: task.id, field, literal, shape: classifyQuestionsLiteral(literal) });
+      }
+    }
+  }
+  return out;
+}
+
+describe("prompt-shape guard (self-test)", () => {
+  test("classifies the §1 script forms and rejects the Jev wire map", () => {
+    expect(
+      classifyQuestionsLiteral('[ { mode: "noul", id: "x", criteria: { true: "y", false: "n" } } ]'),
+    ).toBe("array");
+    expect(
+      classifyQuestionsLiteral('{ mode: "noul", id: "x", criteria: { true: "y", false: "n" } }'),
+    ).toBe("single-question");
+    expect(classifyQuestionsLiteral('{ mode, id, criteria: { true: "y", false: "n" } }')).toBe(
+      "single-question",
+    );
+    expect(classifyQuestionsLiteral('{ id: "x", mode: "noul" }')).toBe("single-question");
+    expect(classifyQuestionsLiteral('{ triage: { mode: "noul", id: "triage" } }')).toBe("id-keyed-map");
+    expect(classifyQuestionsLiteral('{ audit: { mode: "noul", id: "audit" } }')).toBe("id-keyed-map");
+    // "…" is the hint's elided placeholder: fail closed rather than guess.
+    expect(classifyQuestionsLiteral("{ … }")).toBe("unrecognised");
+  });
+
+  test("extracts a balanced literal and is not fooled by brackets inside strings", () => {
+    const text =
+      'questions: [{ mode: "noul", id: "q", criteria: { true: "}", false: "{" } }], escalateBelow: 0.5';
+    const found = questionsLiterals(text);
+    expect(found.length).toBe(1);
+    expect(classifyQuestionsLiteral(found[0] as string)).toBe("array");
+    expect(found[0]).toContain('true: "}"');
+    expect(found[0]).not.toContain("escalateBelow");
+  });
+
+  test("reads the question ids out of a literal", () => {
+    expect(questionIds('{ mode: "noul", id: "triage", criterion: "..." }')).toEqual(["triage"]);
+    expect(questionIds('{ mode: "noul", criteria: { true: "a", false: "b" } }')).toEqual([]);
+  });
+});
+
 describe("TASKS catalog", () => {
   test("is non-empty and within the 4–5 range", () => {
     expect(TASKS.length).toBeGreaterThanOrEqual(4);
@@ -136,6 +264,69 @@ describe("TASKS catalog", () => {
       expect(prompt).toContain("escalate");
       expect(prompt).toContain("break");
     }
+  });
+
+  test("no prompt teaches the Jev id-keyed wire map as `questions`", () => {
+    const samples = promptSamples();
+    // Fail closed if the extractor stops finding anything: a silent skip would hide the defect.
+    expect(samples.length).toBeGreaterThanOrEqual(2);
+    const offenders = samples
+      .filter((sample) => sample.shape === "id-keyed-map" || sample.shape === "unrecognised")
+      .map((sample) => `${sample.taskId}.${sample.field} (${sample.shape}): ${sample.literal.slice(0, 90)}`);
+    expect(offenders).toEqual([]);
+  });
+
+  test("every prompt `questions` sample is the §1 script-facing shape", () => {
+    const samples = promptSamples();
+    expect(samples.length).toBeGreaterThanOrEqual(2);
+    for (const sample of samples) {
+      expect(`${sample.taskId}.${sample.field}:${sample.shape}`).toMatch(
+        /:(array|single-question)$/,
+      );
+    }
+  });
+
+  test("an array-form example that inspects `d.escalate` shows how to get one verdict", () => {
+    // An array input yields DecideVerdict[] (§1), so `d` must be reduced before `d.escalate`.
+    let checked = 0;
+    for (const task of TASKS) {
+      for (const field of PROMPT_FIELDS) {
+        const text = task[field];
+        if (typeof text !== "string") continue;
+        const shapes = questionsLiterals(text).map(classifyQuestionsLiteral);
+        if (!shapes.includes("array") || !text.includes("d.escalate")) continue;
+        checked += 1;
+        const reduces = /(\[0\]|\[\s*d\s*\])/.test(text);
+        expect(`${task.id}.${field}:${reduces ? "ok" : "no-single-verdict-extraction"}`).toBe(
+          `${task.id}.${field}:ok`,
+        );
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(1);
+  });
+
+  test("every question id a prompt teaches is scripted for the offline judge", () => {
+    // The fake judge throws on unscripted ids, so a live model following its prompt must still
+    // find an answer. Generous but not vacuous: it must actually see the taught ids.
+    let seen = 0;
+    const missing: string[] = [];
+    for (const task of TASKS) {
+      const answers = (task as TaskWithJudgeAnswers).judgeAnswers ?? {};
+      for (const field of PROMPT_FIELDS) {
+        const text = task[field];
+        if (typeof text !== "string") continue;
+        for (const literal of questionsLiterals(text)) {
+          for (const id of questionIds(literal)) {
+            seen += 1;
+            if (answers[id] === undefined) {
+              missing.push(`${task.id}.${field}: "${id}" has no judgeAnswers entry`);
+            }
+          }
+        }
+      }
+    }
+    expect(seen).toBeGreaterThanOrEqual(2);
+    expect(missing).toEqual([]);
   });
 
   test("every fixture directory exists and is non-empty", () => {

@@ -42,8 +42,14 @@ export const deprecatedAudit: TaskWithJudgeAnswers = {
   kind: "long-loop",
   fixture: "harness/fixtures/service-tree",
   tools: ["read", "grep", "glob", "write"],
-  /** Offline judge answers for the canned arm-C program (non-escalating: no `escalateBelow`). */
-  judgeAnswers: { actionable: { noul: 0.95, confidence: 0.9 } },
+  /**
+   * Offline judge answers for the canned arm-C program (non-escalating: no `escalateBelow`).
+   * `actionable` is what the canned program sends; `audit` is what the arm-C prompt teaches.
+   */
+  judgeAnswers: {
+    actionable: { noul: 0.95, confidence: 0.9 },
+    audit: { noul: 0.95, confidence: 0.9 },
+  },
   prompt: [
     "You are working in a tree of small service modules under `src/`.",
     "Inspect every module and produce the audit artefact described below.",
@@ -61,7 +67,9 @@ export const deprecatedAudit: TaskWithJudgeAnswers = {
   ].join("\n"),
   escalationPrompt: [
     "Arm C extra requirement — you must use the `decide` tool inside the program:",
-    "  * `const d = await tools.typesafe.decide({ state, questions: { audit: { mode: \"noul\", id: \"audit\", criterion: \"...\", criteria: { true: \"...\", false: \"...\" } } } })`",
+    "  * `const verdicts = await tools.typesafe.decide({ state, questions: [{ mode: \"noul\", id: \"audit\", criterion: \"...\", criteria: { true: \"...\", false: \"...\" } }], escalateBelow: 0.5 })`",
+    "    `questions` is an ARRAY of question objects (the §1 script-facing shape); one question in gives an array holding one verdict back.",
+    "  * `const d = verdicts[0];` — the single verdict the handler below inspects.",
     "  * call it at least once while iterating the files,",
     "  * keep a `done` ledger of what you have processed,",
     "  * and include the escalation handler verbatim in shape: `if (d.escalate) { console.log(\"[escalate]\", d.reason); break }`,",
