@@ -121,6 +121,16 @@ export interface DecideVerdict {
 //   decide(state, [ q1, q2, ... ])      -> DecideVerdict[]
 ```
 
+> **Shape caution (learned the hard way — this bug class recurred 3× during the build).** The
+> single-question form `questions: { mode, id, … }` and the backend's internal wire map
+> `questions: { <id>: { type, … } }` **open identically** (`questions: {`). The wire map is built
+> *inside* the tool and must never be passed by a script: the engine reads a non-array object as a
+> single question, finds no `mode`/`id`, and throws
+> `decide: question at index 0 needs a non-empty string "id"`. Anything model-facing — the hint,
+> task prompts, docs examples — must use the array form or a bare question **carrying `mode` and
+> `id`**. There is a regression guard for prompts in `harness/tasks/tasks.test.ts` and for the hint
+> in `src/hint.test.ts`; keep them when adding examples.
+
 ### Rules (binding)
 
 - **Batching.** An array of questions is ONE Jev request (`questions` keyed by `id`).
