@@ -112,7 +112,7 @@ older plugin can hold a stale `decide`; the CLI never prints it).
 | 1 | pre-flip catalog of the six | **Automated** — read inside the host's tool transform before the flip |
 | 2 | post-flip catalog + merge safety | **Automated** — read after the flip, plus `ctx.tool.list()` |
 | 3 | direct-list exclusivity | **Automated capture, human-triggered** request; cross-check the TUI tool list by eye |
-| 4 | effective `decide` path | **Automated** — `tools.typesafe.decide` when namespaced, else `tools.decide`; prints **UNKNOWN** (with the views checked) when no catalog view the probe read contains it |
+| 4 | effective `decide` path | **Automated** — `tools.typesafe.decide` when namespaced, else `tools.decide`; prints **UNKNOWN** (with the views checked) when no catalog view the probe read contains it, or **SEEN BUT NOT DERIVABLE** when a `decide`-shaped id is present but its namespace cannot be derived — never reported as absence |
 | 5 | nested `read` still in the pipeline | **Automated capture** of `execute.before/after`; the approval **prompt** is human-observed |
 
 Interpretation pointers printed by the report:
@@ -123,6 +123,11 @@ Interpretation pointers printed by the report:
   surfaces **coexist**. If *every* recorded request exposed an empty list, the report says
   **UNKNOWN** — an empty hook is not evidence of removal.
 - Section (4): `typeof tools.X.decide` lies — only calling reveals absence. Trust the printed path.
+  **SEEN BUT NOT DERIVABLE** means a `decide`-shaped id *is* in the catalog but the probe refuses to
+  guess a call path from it (a namespace prefix containing `_`, `.`, `-` or `/` has an ambiguous split
+  point, and this is the host's namespace separator — `typesafe_decide` is the real spelling here).
+  That is explicitly **not** evidence of absence: read `bun run probe --json` and call the path
+  explicitly. Note the probe deliberately derives a namespace only from a single identifier segment.
 - Section (5): a `read` appearing in `execute.before`/`execute.after` shows a read call reached the
   host's tool pipeline. The record alone cannot attribute it to the sandbox or to a direct call, and
   the report does not. Whether the approval **prompt** appears when a script calls `read` is the
