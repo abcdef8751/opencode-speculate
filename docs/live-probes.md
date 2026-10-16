@@ -77,8 +77,9 @@ Before step 2 this **exits non-zero** with "the host did not load this plugin". 
 prints the report.
 
 Exit codes: `0` ok · `1` plugin not loaded · `2` record stale (older than 6h; pass `--allow-stale`
-to inspect anyway) · `3` loaded but no tool transform observed. Also `bun run probe -- --json` for
-the raw record.
+to inspect anyway) · `3` loaded but no tool transform observed. Also `bun run probe -- --json` for the
+machine-readable record — the raw fields plus a **recomputed** `decide` (a record written by an
+older plugin can hold a stale `decide`; the CLI never prints it).
 
 #### 4. Human steps (do these, then re-run `bun run probe`)
 
