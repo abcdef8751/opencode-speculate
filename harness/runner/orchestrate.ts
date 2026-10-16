@@ -31,6 +31,8 @@ export interface RunHarnessOptions {
   signal?: AbortSignal;
   /** Extra answers for the offline fake judge (arm C). */
   judgeScript?: Record<string, { noul?: number; choice?: string; score?: number; confidence?: number }>;
+  /** Canned per-task programs for the mock driver (`programs` passthrough). */
+  mockPrograms?: Record<string, { A?: string; B?: string; C?: string }>;
   /** API key for the real Jev judge; ignored for `--driver mock` so mock runs stay offline. */
   apiKey?: string;
   createJevJudge?: (opts: { apiKey: string; baseURL?: string; model?: string }) => Judge;
@@ -126,7 +128,13 @@ export async function runHarness(opts: RunHarnessOptions): Promise<RunOutcome> {
 
         let driver: ModelDriver;
         try {
-          driver = opts.driverName === "opencode" ? sources.createOpenCodeCliDriver() : sources.createMockDriver({ seed: opts.seed ?? 1 });
+          driver =
+            opts.driverName === "opencode"
+              ? sources.createOpenCodeCliDriver()
+              : sources.createMockDriver({
+                  seed: opts.seed ?? 1,
+                  ...(opts.mockPrograms === undefined ? {} : { programs: opts.mockPrograms }),
+                });
         } catch (error) {
           results.push(failureResult(arm, task, runIndex, error));
           if (opts.keepScratch !== true) await removeScratchDir(scratchDir);
