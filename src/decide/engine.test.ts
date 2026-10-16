@@ -87,6 +87,9 @@ const qc: DecideQuestion = {
   options: { auth: "the auth module", db: "the database layer" },
 }
 
+/** The engine's injected hash used by every test, so cache keys match seeded entries. */
+const testHash = (input: string): string => `h(${input})`
+
 function deps(
   judge: Judge,
   log?: (entry: Json) => void,
@@ -95,7 +98,7 @@ function deps(
     judge,
     storage: createStorage(),
     now: () => 1000,
-    hash: (input) => `h(${input})`,
+    hash: testHash,
     ...(log ? { log } : {}),
   }
 }
@@ -379,7 +382,7 @@ describe("cache", () => {
     const judge = createJudge((req) => {
       const map: Record<string, SystemOneAnswer> = {}
       for (const id of Object.keys(req.questions)) {
-        map[id] = { type: "noul", noul: 0.9 }
+        map[id] = id === "b" ? { type: "score", score: 2, confidence: 0.8 } : { type: "noul", noul: 0.9 }
       }
       return answers(map)
     })
@@ -398,7 +401,9 @@ describe("cache", () => {
   test("a batch is skipped only if every question hits", async () => {
     const judge = createJudge((req) => {
       const map: Record<string, SystemOneAnswer> = {}
-      for (const id of Object.keys(req.questions)) map[id] = { type: "noul", noul: 0.9 }
+      for (const id of Object.keys(req.questions)) {
+        map[id] = id === "b" ? { type: "score", score: 2, confidence: 0.8 } : { type: "noul", noul: 0.9 }
+      }
       return answers(map)
     })
     const d = deps(judge)
@@ -444,6 +449,92 @@ describe("cache", () => {
     expect(second.escalate).toBe(true)
     expect(second.reason).toBe(first.reason)
     expect(judge.calls).toHaveLength(1)
+  })
+
+  test("defect 1: stored WITH a threshold, re-read WITHOUT one ⇒ escalate:false", async () => {
+    const judge = createJudge(() => answers({ a: { type: "noul", noul: 0.6 } })) // confidence 0.2
+    const d = deps(judge)
+    const first = (await runDecide(d, {
+      state: "s",
+      questions: qa,
+      escalateBelow: 0.5,
+    })) as DecideVerdict
+    expect(first.cached).toBe(false)
+    expect(first.escalate).toBe(true)
+
+    // No threshold anywhere on the second call ⇒ §1 says escalate is always false.
+    const second = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
+    expect(second.cached).toBe(true)
+    expect(second.escalate).toBe(false)
+    expect(second.reason).toBeUndefined()
+    expect(judge.calls).toHaveLength(1)
+  })
+
+  test("defect 1: stored WITHOUT a threshold, re-read WITH a high one ⇒ fresh escalate + reason", async () => {
+    const judge = createJudge(() => answers({ a: { type: "noul", noul: 0.6 } })) // confidence 0.2
+    const d = deps(judge)
+    const first = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
+    expect(first.cached).toBe(false)
+    expect(first.escalate).toBe(false)
+
+    const second = (await runDecide(d, {
+      state: "s",
+      questions: qa,
+      escalateBelow: 0.5,
+    })) as DecideVerdict
+    expect(second.cached).toBe(true)
+    expect(second.escalate).toBe(true)
+    expect(second.reason).toBeTruthy()
+    expect(second.reason).toContain("threshold 0.5")
+    expect(judge.calls).toHaveLength(1)
+  })
+
+  test("defect 2: a valid-shaped but foreign entry (wrong id / wrong mode) is a miss", async () => {
+    // Wrong id: structurally valid, stored under qa's key but belongs to another question.
+    const judge = createJudge(() => answers({ a: { type: "noul", noul: 0.9 } }))
+    const d = deps(judge)
+    d.storage.map.set(decideCacheKey(testHash, "s", qa), {
+      id: "other",
+      mode: "noul",
+      value: true,
+      confidence: 0.9,
+      modelId: "m",
+      escalate: false,
+    })
+    const out = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
+    expect(out.cached).toBe(false)
+    expect(out.id).toBe("a")
+    expect(judge.calls).toHaveLength(1)
+
+    // Wrong mode: same id, different mode ⇒ also a miss.
+    const judge2 = createJudge(() => answers({ a: { type: "noul", noul: 0.9 } }))
+    const d2 = deps(judge2)
+    d2.storage.map.set(decideCacheKey(testHash, "s", qa), {
+      id: "a",
+      mode: "score",
+      value: 1,
+      confidence: 0.9,
+      modelId: "m",
+      escalate: false,
+    })
+    const out2 = (await runDecide(d2, { state: "s", questions: qa })) as DecideVerdict
+    expect(out2.cached).toBe(false)
+    expect(out2.mode).toBe("noul")
+    expect(judge2.calls).toHaveLength(1)
+  })
+
+  test("an unusable answer is never cached, so its escalation cannot be lost on a hit", async () => {
+    const judge = createJudge(() => answers({})) // no answer for "a"
+    const d = deps(judge)
+    const first = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
+    expect(first.escalate).toBe(true)
+    expect(first.reason).toBeTruthy()
+    expect(d.storage.map.size).toBe(0)
+
+    const second = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
+    expect(second.cached).toBe(false)
+    expect(second.escalate).toBe(true)
+    expect(judge.calls).toHaveLength(2)
   })
 
   test("choice questions accept null descriptions and p === 0.5 noul picks true", async () => {
@@ -530,15 +621,14 @@ describe("decision log", () => {
     expect(() => JSON.stringify(entry)).not.toThrow()
   })
 
-  test("an all-cached batch logs one cached entry with latency 0", async () => {
+  test("a full-cache-hit batch emits no log entry (no Jev request)", async () => {
     const judge = createJudge(() => answers({ a: { type: "noul", noul: 0.9 } }))
     const { entries, log } = createLog()
     const d: EngineDeps = { ...deps(judge, log) }
     await runDecide(d, { state: "s", questions: qa })
+    expect(entries).toHaveLength(1) // the one real request
     await runDecide(d, { state: "s", questions: qa })
-    expect(entries).toHaveLength(2)
-    expect((entries[1] as Record<string, unknown>).cached).toBe(true)
-    expect((entries[1] as Record<string, unknown>).latencyMs).toBe(0)
+    expect(entries).toHaveLength(1) // all-cached ⇒ no request ⇒ no entry
     expect(judge.calls).toHaveLength(1)
   })
 
