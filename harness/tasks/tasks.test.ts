@@ -109,12 +109,12 @@ async function solve(task: TaskDef, dir: string): Promise<void> {
  * what let that slip through before, so these helpers inspect the literal's SHAPE.
  * ------------------------------------------------------------------ */
 
-type QuestionsShape = "array" | "single-question" | "id-keyed-map" | "unrecognised";
+export type QuestionsShape = "array" | "single-question" | "id-keyed-map" | "unrecognised";
 
 const PROMPT_FIELDS = ["prompt", "scriptPrompt", "escalationPrompt"] as const;
 
 /** Every `questions: <literal>` sample in `text`, with brackets balanced and strings skipped. */
-function questionsLiterals(text: string): string[] {
+export function questionsLiterals(text: string): string[] {
   const found: string[] = [];
   const marker = /questions:\s*/g;
   let match: RegExpExecArray | null;
@@ -154,7 +154,7 @@ function questionsLiterals(text: string): string[] {
   return found;
 }
 
-function classifyQuestionsLiteral(literal: string): QuestionsShape {
+export function classifyQuestionsLiteral(literal: string): QuestionsShape {
   const body = literal.trim();
   if (body.startsWith("[")) return "array";
   // A bare §1 question object starts with `mode`/`id`.
@@ -165,7 +165,7 @@ function classifyQuestionsLiteral(literal: string): QuestionsShape {
 }
 
 /** Every `id: "<value>"` inside a questions literal. */
-function questionIds(literal: string): string[] {
+export function questionIds(literal: string): string[] {
   const out: string[] = [];
   for (const m of literal.matchAll(/\bid\s*:\s*"([^"]*)"/g)) out.push(m[1] ?? "");
   return out;
@@ -191,6 +191,40 @@ function promptSamples(): PromptSample[] {
   }
   return out;
 }
+
+describe("prompt-shape guard (self-test)", () => {
+  test("classifies the §1 script forms and rejects the Jev wire map", () => {
+    expect(
+      classifyQuestionsLiteral('[ { mode: "noul", id: "x", criteria: { true: "y", false: "n" } } ]'),
+    ).toBe("array");
+    expect(
+      classifyQuestionsLiteral('{ mode: "noul", id: "x", criteria: { true: "y", false: "n" } }'),
+    ).toBe("single-question");
+    expect(classifyQuestionsLiteral('{ mode, id, criteria: { true: "y", false: "n" } }')).toBe(
+      "single-question",
+    );
+    expect(classifyQuestionsLiteral('{ id: "x", mode: "noul" }')).toBe("single-question");
+    expect(classifyQuestionsLiteral('{ triage: { mode: "noul", id: "triage" } }')).toBe("id-keyed-map");
+    expect(classifyQuestionsLiteral('{ audit: { mode: "noul", id: "audit" } }')).toBe("id-keyed-map");
+    // "…" is the hint's elided placeholder: fail closed rather than guess.
+    expect(classifyQuestionsLiteral("{ … }")).toBe("unrecognised");
+  });
+
+  test("extracts a balanced literal and is not fooled by brackets inside strings", () => {
+    const text =
+      'questions: [{ mode: "noul", id: "q", criteria: { true: "}", false: "{" } }], escalateBelow: 0.5';
+    const found = questionsLiterals(text);
+    expect(found.length).toBe(1);
+    expect(classifyQuestionsLiteral(found[0] as string)).toBe("array");
+    expect(found[0]).toContain('true: "}"');
+    expect(found[0]).not.toContain("escalateBelow");
+  });
+
+  test("reads the question ids out of a literal", () => {
+    expect(questionIds('{ mode: "noul", id: "triage", criterion: "..." }')).toEqual(["triage"]);
+    expect(questionIds('{ mode: "noul", criteria: { true: "a", false: "b" } }')).toEqual([]);
+  });
+});
 
 describe("TASKS catalog", () => {
   test("is non-empty and within the 4–5 range", () => {
