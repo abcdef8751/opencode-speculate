@@ -8,6 +8,7 @@
 
 import { addUsage } from "../../pricing.ts";
 import type { ArmResult, ChatMessage } from "../../types.ts";
+import { truncationNote } from "../../metrics/index.ts";
 import { armClock, armSystemMessage, toolsForArm, type ArmContext } from "./context.ts";
 import { attributeCost, emptyResult, zeroUsage } from "../results.ts";
 
@@ -65,7 +66,9 @@ export async function runArmA(ctx: ArmContext): Promise<ArmResult> {
     }
 
     if (result.turns >= ctx.maxTurns && result.turns > 0) {
-      result.notes.push(`stopped at maxTurns=${ctx.maxTurns}`);
+      // Machine-readable marker (see metrics/aggregate.ts): a truncated run must not look healthy
+      // to the gate, which only sees `ok`.
+      result.notes.push(truncationNote(ctx.maxTurns));
     }
 
     result.usage = attributeCost(usage, ctx.modelId ?? ctx.driver.id);

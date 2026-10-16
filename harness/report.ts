@@ -85,7 +85,7 @@ function detailRow(result: ArmResult): string {
 
 export function renderMarkdown(report: RunReport, notes: readonly string[] = []): string {
   const mock = isMockDriver(report.driver);
-  const gate = evaluateGate(report.summary, { driver: report.driver });
+  const gate = evaluateGate(report.summary, { driver: report.driver, results: report.results });
   const tasks = [...new Set(report.results.map((result) => result.taskId))].sort();
   const lines: string[] = [];
 

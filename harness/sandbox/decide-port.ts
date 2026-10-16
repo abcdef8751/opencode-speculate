@@ -80,10 +80,15 @@ export interface SystemOneAnswer {
   probabilities?: Record<string, number>;
   legend?: Record<string, string>;
 }
+export interface SystemOneUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+}
+
 export interface SystemOneResult {
   model: string;
   answers: Record<string, SystemOneAnswer>;
-  usage?: { input_tokens: number | null; output_tokens: number | null };
+  usage?: SystemOneUsage;
 }
 
 export interface Judge {
@@ -99,7 +104,10 @@ export interface StoragePort {
   set(key: string, value: Json): Promise<void>;
 }
 
-/** One decision-log entry, as emitted by `createDecideRuntime`'s `log` sink. */
+/**
+ * One decision-log entry, as emitted by `createDecideRuntime`'s `log` sink: exactly one per
+ * `decide` **call** (§1), whether or not the call reached the backend.
+ */
 export interface DecideLogEntry {
   at: number;
   modelId: string;
@@ -107,7 +115,8 @@ export interface DecideLogEntry {
   cached: boolean;
   questionIds: string[];
   verdicts: DecideVerdict[];
-  usage?: { input_tokens: number | null; output_tokens: number | null };
+  /** `null` when the whole call was served from cache (no backend request happened). */
+  usage: SystemOneUsage | null;
 }
 
 export interface DecidePluginTool {

@@ -207,7 +207,7 @@ async function main(): Promise<number> {
     );
   }
 
-  const gate = evaluateGate(report.summary, { driver: report.driver });
+  const gate = evaluateGate(report.summary, { driver: report.driver, results: report.results });
   console.log("");
   console.log(`gate: ${gate.pass ? "PASS" : "FAIL"}`);
   for (const note of gate.notes) console.log(`  - ${note}`);

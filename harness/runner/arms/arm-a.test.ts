@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { runArmA } from "./arm-a.ts";
 import type { ArmContext } from "./context.ts";
+import { isTruncated, truncationNote } from "../../metrics/index.ts";
 import { cleanupTempDirs, replayDriver, response, testTask, testToolbox, usage } from "../testing.ts";
 
 afterAll(cleanupTempDirs);
@@ -85,7 +86,8 @@ describe("arm A: direct tool loop", () => {
     expect(result.turns).toBe(2);
     expect(driver.requests).toHaveLength(2);
     expect(result.toolCalls).toEqual(["read", "read"]);
-    expect(result.notes.some((note) => note.includes("maxTurns=2"))).toBe(true);
+    expect(result.notes).toContain(truncationNote(2));
+    expect(isTruncated(result)).toBe(true);
   });
 
   test("counts tool failures, keeps looping and shows the failure to the model", async () => {

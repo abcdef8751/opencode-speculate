@@ -81,6 +81,37 @@ export interface GateOptions {
    * carries a "SYNTHETIC NUMBERS" note, so the caveat travels with the number people quote.
    */
   driver?: string | undefined;
+  /**
+   * The run's per-run results (`RunReport.results`). Needed to detect a run that stopped at its turn
+   * budget: `ok` cannot express truncation, so a truncated baseline would otherwise look healthy.
+   */
+  results?: readonly ArmResult[] | undefined;
+}
+
+/**
+ * Stable `ArmResult.notes` marker for "this run's loop stopped at its turn budget". `ArmResult` is
+ * frozen, so truncation is recorded in `notes` (emitted by `runner/arms/arm-a.ts`) and read back
+ * here instead of adding a field.
+ */
+export const TRUNCATION_NOTE_PREFIX = "truncated at maxTurns=";
+
+/** The note arm A records when it stops at its turn budget rather than finishing on its own. */
+export function truncationNote(maxTurns: number): string {
+  return `${TRUNCATION_NOTE_PREFIX}${maxTurns}`;
+}
+
+/** True when a run was cut off by its turn budget. */
+export function isTruncated(result: Pick<ArmResult, "notes">): boolean {
+  return result.notes.some((note) => note.startsWith(TRUNCATION_NOTE_PREFIX));
+}
+
+/** Truncated runs per arm. */
+export function truncatedRunsByArm(results: readonly ArmResult[]): Record<ArmID, number> {
+  const counts: Record<ArmID, number> = { A: 0, B: 0, C: 0 };
+  for (const result of results) {
+    if (isTruncated(result)) counts[result.arm] += 1;
+  }
+  return counts;
 }
 
 /**
@@ -97,13 +128,16 @@ export function isMockDriver(driver: string | undefined): boolean {
  *   - cache-read tokens down in C vs A (the hypothesis);
  *   - correctness equal-or-better in C vs every other arm;
  *   - escalation rate in C low;
- *   - **the baseline must be trustworthy**: arm A runs cannot have harness-level errors, and arm C
- *     must have produced at least one successful run.
+ *   - **the baseline must be trustworthy**: arm A runs cannot have harness-level errors *and* none
+ *     of them may have stopped at its turn budget, and arm C must have produced at least one
+ *     successful run.
  *
  * The health rule exists because `correctnessEqualOrBetter` compares *rates*: a broken arm A
  * (correctness 0, or aborted mid-loop so its cache reads are undercounted) trivially satisfies
  * `cRate >= aRate` and could let C post a lower mean. `pass` therefore requires `A.ok === A.runs`
- * and `C.ok > 0`; any arm with harness-level errors is called out in `notes`.
+ * **and no truncated A run** (pass `results` so this can be seen — `ok` is a harness-error flag and
+ * is `true` for a run that merely ran out of turns), plus `C.ok > 0`. Any arm with harness-level
+ * errors or truncation is called out in `notes`.
  *
  * `cacheReadDownVsB` is reported as well (it says whether the *decide* lever on top of the script
  * costs cache reads), but it is not part of `pass` — the gate names the A baseline.
@@ -137,7 +171,9 @@ export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptio
   const escalationLow = c.escalationRate <= maxEscalationRate;
 
   // Health: the baseline mean is only a baseline when every A run finished; C needs evidence.
-  const baselineHealthy = a.runs > 0 && a.ok === a.runs;
+  const truncated = opts.results === undefined ? { A: 0, B: 0, C: 0 } : truncatedRunsByArm(opts.results);
+  const baselineTruncated = truncated.A > 0;
+  const baselineHealthy = a.runs > 0 && a.ok === a.runs && !baselineTruncated;
   const challengerHasEvidence = c.ok > 0;
   const errors = ([
     ["A", a],
@@ -151,15 +187,24 @@ export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptio
     `cache-read tokens/run: A=${a.cacheReadTokensMean.toFixed(1)} B=${b.cacheReadTokensMean.toFixed(1)} C=${c.cacheReadTokensMean.toFixed(1)}`,
   );
   if (c.runs === 0) notes.push("arm C produced no runs — gate cannot be satisfied");
+  for (const arm of ARM_IDS) {
+    if (truncated[arm] > 0) {
+      notes.push(
+        `arm ${arm} was CUT OFF mid-task in ${truncated[arm]} run(s) (turn budget reached): its mean is a lower bound, not a completed measurement`,
+      );
+    }
+  }
+  if (baselineTruncated) {
+    notes.push(
+      `baseline arm A is not a valid baseline — see the truncation note above; gate cannot pass (raise \`--max-turns\` and re-run)`,
+    );
+  } else if (a.runs === 0) {
+    notes.push("baseline arm A produced no runs — its cache-read mean cannot be a baseline");
+  } else if (!baselineHealthy) {
+    notes.push(`baseline arm A is not healthy (ok=${a.ok}/${a.runs}); its cache-read mean is not a trustworthy baseline — gate cannot pass`);
+  }
   if (errors.length > 0) {
     notes.push(`harness-level errors (ok/runs): ${errors.join(" ")} — means include failed runs`);
-  }
-  if (!baselineHealthy) {
-    notes.push(
-      a.runs === 0
-        ? "baseline arm A produced no runs — its cache-read mean cannot be a baseline"
-        : `baseline arm A is not healthy (ok=${a.ok}/${a.runs}); its cache-read mean is not a trustworthy baseline — gate cannot pass`,
-    );
   }
   if (!challengerHasEvidence) {
     notes.push("arm C has no successful run — there is no evidence for a win");
@@ -172,7 +217,11 @@ export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptio
     notes.push("decide did not lower cache reads vs the script-only arm B (informational, not gating)");
   }
   if (a.runs > 0 && a.cacheReadTokensMean === 0 && c.cacheReadTokensMean === 0) {
-    notes.push("both A and C report zero cache reads — these are synthetic numbers, not a measurement");
+    notes.push(
+      synthetic
+        ? "both A and C report zero cache reads — these are synthetic numbers, not a measurement"
+        : `both A and C report zero cache reads — the driver ("${opts.driver ?? "unset"}") reported no cache-read tokens, so the cache-read comparison carries no information`,
+    );
   }
 
   const pass =

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ArmID, ArmResult } from "../types.ts";
-import { emptySummary, evaluateGate, summarise, summariseByArm } from "./index.ts";
+import { emptySummary, evaluateGate, isTruncated, summarise, summariseByArm, truncatedRunsByArm, truncationNote } from "./index.ts";
 
 /** Hand-built `ArmResult` fixture — no runner, no sandbox, pure metric math. */
 function result(arm: ArmID, overrides: Partial<ArmResult> = {}): ArmResult {
@@ -122,21 +122,92 @@ describe("evaluateGate", () => {
     expect(gate.pass).toBe(false);
   });
 
-  test("warns when every arm reports zero cache reads (synthetic mock usage)", () => {
-    const gate = evaluateGate(
+  test("warns when every arm reports zero cache reads — synthetic for mock, 'not reported' otherwise", () => {
+    const zeroArms = () =>
       summariseByArm([
         result("A", { usage: { fresh: 10, cacheWrite: 0, cacheRead: 0, output: 5 } }),
         result("B", { usage: { fresh: 10, cacheWrite: 0, cacheRead: 0, output: 5 } }),
         result("C", { usage: { fresh: 10, cacheWrite: 0, cacheRead: 0, output: 5 } }),
-      ]),
-    );
-    expect(gate.notes.join(" ")).toContain("synthetic");
+      ]);
+
+    expect(evaluateGate(zeroArms(), { driver: "mock" }).notes.join(" ")).toContain("these are synthetic numbers");
+    const real = evaluateGate(zeroArms(), { driver: "opencode" }).notes.join(" ");
+    expect(real).toContain("reported no cache-read tokens");
+    expect(real).not.toContain("synthetic numbers");
+    const unset = evaluateGate(zeroArms()).notes.join(" ");
+    expect(unset).toContain("reported no cache-read tokens");
+    expect(unset).not.toContain("synthetic numbers");
   });
 
   test("an empty arm C cannot pass", () => {
     const gate = evaluateGate({ A: emptySummary(), B: summarizeTwo(), C: emptySummary() });
     expect(gate.pass).toBe(false);
     expect(gate.notes.join(" ")).toContain("no runs");
+  });
+
+  test("a truncated baseline arm cannot pass, and the truncation is named in the verdict", () => {
+    // `ok` is true: this is not a harness error, it is a run that ran out of turns. Everything else
+    // looks like a win, so only the truncation marker can block it.
+    const truncatedA = result("A", {
+      notes: [truncationNote(24)],
+      turns: 24,
+      usage: { fresh: 0, cacheWrite: 0, cacheRead: 200, output: 0 },
+      correctness: { passed: false },
+    });
+    const gate = evaluateGate(
+      summariseByArm([
+        truncatedA,
+        result("B", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 150, output: 0 } }),
+        result("C", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 1, output: 0 } }),
+      ]),
+      { results: [truncatedA, result("B"), result("C")] },
+    );
+
+    expect(isTruncated(truncatedA)).toBe(true);
+    expect(gate.cacheReadDownVsA).toBe(true);
+    expect(gate.correctnessEqualOrBetter).toBe(true);
+    expect(gate.escalationLow).toBe(true);
+    expect(gate.pass).toBe(false);
+    expect(gate.notes.join(" ")).toContain("arm A was CUT OFF mid-task in 1 run(s)");
+    expect(gate.notes.join(" ")).toContain("baseline arm A is not a valid baseline");
+    expect(gate.notes.join(" ")).toContain("--max-turns");
+    expect(gate.notes.join(" ")).not.toContain("is not healthy (ok="); // no misleading ok=1/1 line
+  });
+
+  test("truncation in a non-baseline arm is annotated but does not block", () => {
+    const truncatedB = result("B", { notes: [truncationNote(24)] });
+    const gate = evaluateGate(
+      summariseByArm([
+        result("A", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 5000, output: 0 } }),
+        truncatedB,
+        result("C", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 1000, output: 0 } }),
+      ]),
+      { results: [result("A"), truncatedB, result("C")] },
+    );
+    expect(gate.pass).toBe(true);
+    expect(gate.notes.join(" ")).toContain("arm B was CUT OFF mid-task in 1 run(s)");
+  });
+
+  test("truncation is invisible when no results are passed (documented caller contract)", () => {
+    // Without `results` the gate can only use `ArmSummary`, so the truncation check cannot run; the
+    // CLI and the report both pass `report.results`.
+    const gate = evaluateGate(
+      summariseByArm([
+        result("A", { notes: [truncationNote(24)], usage: { fresh: 0, cacheWrite: 0, cacheRead: 200, output: 0 } }),
+        result("B", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 150, output: 0 } }),
+        result("C", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 1, output: 0 } }),
+      ]),
+    );
+    expect(gate.notes.join(" ")).not.toContain("CUT OFF");
+  });
+
+  test("counts truncated runs per arm", () => {
+    expect(truncatedRunsByArm([result("A", { notes: [truncationNote(24)] }), result("A"), result("C", { notes: [truncationNote(24)] })])).toEqual({
+      A: 1,
+      B: 0,
+      C: 1,
+    });
+    expect(isTruncated(result("A", { notes: ["stopped for another reason"] }))).toBe(false);
   });
 
   test("a mock run carries its synthetic caveat inside the verdict", () => {
