@@ -45,6 +45,11 @@ export interface BuildToolTreeOptions {
   toolbox: ToolBox;
   /** The §1 plugin tool. Mounted at `tools.<DECIDE_NAMESPACE>.decide`. */
   decide?: DecidePluginTool | undefined;
+  /**
+   * Forwarded to every sandbox tool call (`ToolBox.call(name, input, signal)`), so cancelling a run
+   * interrupts in-flight tools (e.g. `execFile`'s `signal` kills a running `shell` child).
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export interface BuiltToolTree {
@@ -56,7 +61,7 @@ function jsonSchema(value: Record<string, unknown>): CMTool.JsonSchema {
   return value as CMTool.JsonSchema;
 }
 
-function fromToolBox(toolbox: ToolBox, name: string): CMTool.Tool {
+function fromToolBox(toolbox: ToolBox, name: string, signal: AbortSignal | undefined): CMTool.Tool {
   const descriptor = toolbox.descriptors.find((entry) => entry.name === name);
   if (descriptor === undefined) {
     throw new Error(`toolbox exposes no descriptor for "${name}"`);
@@ -67,7 +72,7 @@ function fromToolBox(toolbox: ToolBox, name: string): CMTool.Tool {
     output: { description: "JSON result of the tool call." },
     execute: (input: unknown) =>
       Effect.promise(async () => {
-        const result = await toolbox.call(name, input);
+        const result = await toolbox.call(name, input, signal);
         return result;
       }),
   });
@@ -81,7 +86,7 @@ export function buildToolTree(opts: BuildToolTreeOptions): BuiltToolTree {
   const warnings: string[] = [];
   const tools: Record<string, unknown> = {};
   for (const name of opts.toolbox.names) {
-    tools[name] = fromToolBox(opts.toolbox, name);
+    tools[name] = fromToolBox(opts.toolbox, name, opts.signal);
   }
   if (opts.decide !== undefined) {
     const namespace = opts.decide.options?.namespace;

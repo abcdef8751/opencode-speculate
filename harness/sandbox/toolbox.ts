@@ -1,9 +1,10 @@
 /**
  * The harness `ToolBox`: six fs/shell built-ins confined to a per-run scratch directory.
  *
- * This is *measurement scaffolding*, not a security boundary. It exists so the three arms can be
- * compared against the same, deterministic tool surface. See `harness/README.md` for the honest
- * limitations (TOCTOU, symlink races, no seccomp, no mount isolation).
+ * This is *measurement scaffolding*, not a security boundary. It refuses textual escapes, symlinked
+ * parents and symlinked write targets, and it exposes no network — but it is not race-free and has
+ * no OS-level isolation. See `harness/README.md` for the exact residual limitations (TOCTOU, hard
+ * links, no seccomp, no mount isolation).
  *
  * Two shapes are produced from the same implementations:
  *   - `descriptors` / `call()` for arm A (the model calls tools turn by turn);
@@ -14,6 +15,7 @@
 
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import type { Stats } from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import type { Json, ToolBox, ToolDescriptor } from "../types.ts";
@@ -64,8 +66,12 @@ export function resolveInside(dir: string, relative: unknown): string {
 }
 
 /**
- * Stronger, still best-effort check: the deepest *existing* ancestor of `abs` must resolve
- * (through symlinks) to a location inside `dir`. Catches the common symlink escape.
+ * Best-effort check that a path inside `dir` does not resolve (through symlinks) outside it: the
+ * deepest *existing* ancestor of `abs` must resolve inside. Used for read targets and for the parent
+ * of write/edit targets; the write target itself is checked separately by `assertSafeWriteTarget`.
+ *
+ * Not race-free: a symlink created between this check and the following `fs` call (TOCTOU) can still
+ * win. See `harness/README.md` "Confinement".
  */
 async function assertRealInside(dir: string, abs: string): Promise<void> {
   const realRoot = await fs.realpath(path.resolve(dir));
@@ -88,9 +94,34 @@ async function assertRealInside(dir: string, abs: string): Promise<void> {
 
 async function resolveForWrite(dir: string, relative: unknown): Promise<string> {
   const abs = resolveInside(dir, relative);
-  const parent = path.dirname(abs);
-  await assertRealInside(dir, parent);
+  await assertRealInside(dir, path.dirname(abs));
+  await assertSafeWriteTarget(dir, abs);
   return abs;
+}
+
+/**
+ * Refuses a symlink at the target itself, and re-asserts the resolved path when the target exists.
+ *
+ * `resolveForWrite` checks the *parent*, which stops a symlinked directory being used to escape —
+ * but a pre-existing symlink at the target is then followed by `fs.writeFile`/`fs.readFile`. That
+ * is reachable from inside the sandbox (`shell({ command: "ln -s /etc/passwd evil.txt" })`), so a
+ * symlink target is refused outright rather than resolved.
+ *
+ * Residual gaps (see `harness/README.md` "Confinement"): a check-then-write race (TOCTOU) and hard
+ * links are outside what this scaffolding can catch.
+ */
+async function assertSafeWriteTarget(dir: string, abs: string): Promise<void> {
+  let stats: Stats | undefined;
+  try {
+    stats = await fs.lstat(abs);
+  } catch {
+    // Target does not exist yet: the prefix check plus the parent realpath check are all that apply.
+    return;
+  }
+  if (stats.isSymbolicLink()) {
+    throw new ToolBoxError(`refusing to write through a symlink: ${abs}`);
+  }
+  await assertRealInside(dir, abs);
 }
 
 async function resolveForRead(dir: string, relative: unknown): Promise<string> {

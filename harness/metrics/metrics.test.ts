@@ -138,6 +138,79 @@ describe("evaluateGate", () => {
     expect(gate.pass).toBe(false);
     expect(gate.notes.join(" ")).toContain("no runs");
   });
+
+  test("a mock run carries its synthetic caveat inside the verdict", () => {
+    const arm = (id: "A" | "B" | "C", cacheRead: number) =>
+      result(id, { usage: { fresh: 0, cacheWrite: 0, cacheRead, output: 0 } });
+    const gate = evaluateGate(summariseByArm([arm("A", 5000), arm("B", 2000), arm("C", 1000)]), { driver: "mock" });
+
+    expect(gate.pass).toBe(true);
+    expect(gate.notes[0]).toMatch(/SYNTHETIC NUMBERS/);
+    expect(gate.notes[0]).toContain("mock");
+    // Non-mock (and unspecified) drivers get no such note.
+    expect(evaluateGate(summariseByArm([arm("A", 5000), arm("B", 2000), arm("C", 1000)]), { driver: "opencode" }).notes.join(" ")).not.toContain(
+      "SYNTHETIC NUMBERS",
+    );
+    expect(evaluateGate(summariseByArm([arm("A", 5000), arm("B", 2000), arm("C", 1000)])).notes.join(" ")).not.toContain("SYNTHETIC NUMBERS");
+  });
+
+  test("a broken baseline arm cannot yield a passing gate, even with a lower C mean", () => {
+    // arm A: one of two runs has a harness-level error, so its mean cache read (150) is undercounted
+    // and every other gate criterion looks favourable.
+    const gate = evaluateGate(
+      summariseByArm([
+        result("A", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 100, output: 0 }, ok: false, correctness: { passed: false } }),
+        result("A", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 200, output: 0 } }),
+        result("B", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 150, output: 0 } }),
+        result("C", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 1, output: 0 } }),
+      ]),
+    );
+
+    expect(gate.cacheReadDownVsA).toBe(true);
+    expect(gate.cacheReadDownVsB).toBe(true);
+    expect(gate.correctnessEqualOrBetter).toBe(true);
+    expect(gate.escalationLow).toBe(true);
+    expect(gate.pass).toBe(false); // blocked by the unhealthy baseline alone
+    expect(gate.notes.join(" ")).toContain("baseline arm A is not healthy (ok=1/2)");
+    expect(gate.notes.join(" ")).toContain("harness-level errors (ok/runs): A=1/2");
+  });
+
+  test("a baseline with no runs at all cannot yield a passing gate", () => {
+    const gate = evaluateGate(
+      summariseByArm([
+        result("B", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 4000, output: 0 } }),
+        result("C", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 1000, output: 0 } }),
+      ]),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.notes.join(" ")).toContain("baseline arm A produced no runs");
+  });
+
+  test("arm C with no successful run is not evidence of a win", () => {
+    const gate = evaluateGate(
+      summariseByArm([
+        result("A", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 5000, output: 0 } }),
+        result("B", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 4000, output: 0 } }),
+        result("C", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 1, output: 0 }, ok: false }),
+      ]),
+    );
+    expect(gate.cacheReadDownVsA).toBe(true);
+    expect(gate.pass).toBe(false);
+    expect(gate.notes.join(" ")).toContain("arm C has no successful run");
+    expect(gate.notes.join(" ")).toContain("harness-level errors (ok/runs): C=0/1");
+  });
+
+  test("errors in B/C are annotated but do not block a healthy-Baseline verdict", () => {
+    const gate = evaluateGate(
+      summariseByArm([
+        result("A", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 5000, output: 0 } }),
+        result("B", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 4000, output: 0 }, ok: false }),
+        result("C", { usage: { fresh: 0, cacheWrite: 0, cacheRead: 1000, output: 0 } }),
+      ]),
+    );
+    expect(gate.pass).toBe(true);
+    expect(gate.notes.join(" ")).toContain("harness-level errors (ok/runs): B=0/1");
+  });
 });
 
 function summarizeTwo() {

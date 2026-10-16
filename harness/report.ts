@@ -6,7 +6,7 @@
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { ARM_IDS, evaluateGate } from "./metrics/index.ts";
+import { ARM_IDS, evaluateGate, isMockDriver } from "./metrics/index.ts";
 import type { ArmID, ArmResult, ArmSummary, RunReport } from "./types.ts";
 
 export interface ReportPaths {
@@ -20,10 +20,8 @@ export function makeStamp(now: Date = new Date()): string {
   return now.toISOString().replace(/[:.]/g, "-");
 }
 
-/** True when token accounting came from the mock driver and must be labelled as synthetic. */
-export function isMockDriver(driver: string): boolean {
-  return driver.toLowerCase().includes("mock");
-}
+/** Re-exported from `./metrics/aggregate.ts` so the gate and the banner cannot disagree. */
+export { isMockDriver };
 
 export function serialiseReport(report: RunReport): string {
   return `${JSON.stringify(report, null, 2)}\n`;
@@ -87,7 +85,7 @@ function detailRow(result: ArmResult): string {
 
 export function renderMarkdown(report: RunReport, notes: readonly string[] = []): string {
   const mock = isMockDriver(report.driver);
-  const gate = evaluateGate(report.summary);
+  const gate = evaluateGate(report.summary, { driver: report.driver });
   const tasks = [...new Set(report.results.map((result) => result.taskId))].sort();
   const lines: string[] = [];
 
@@ -119,6 +117,10 @@ export function renderMarkdown(report: RunReport, notes: readonly string[] = [])
   lines.push("");
   lines.push(
     "_means per run; `cacheRead`/`fresh`/`output` are tokens; `escalation`/`scriptFail` are rates over runs._",
+  );
+  lines.push("");
+  lines.push(
+    "_`turns` is **not** a like-for-like model-efficiency comparison: arms B/C make exactly one model call per run and never retry after a parse or tool failure, while arm A may use up to its `maxTurns` budget. The arms are compared on cache-read tokens and correctness._",
   );
   lines.push("");
 
