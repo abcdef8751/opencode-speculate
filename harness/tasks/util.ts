@@ -9,7 +9,22 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import type { TaskVerifyResult } from "../types.ts";
+import type { TaskDef, TaskVerifyResult } from "../types.ts";
+
+/**
+ * Offline fake-judge answers a task can carry for arm C.
+ *
+ * `TaskDef` (`harness/types.ts`, frozen) has no such field, so it is duck-typed: D1's orchestrator
+ * (`harness/runner/orchestrate.ts`) reads `(task as TaskDef & { judgeAnswers?: … }).judgeAnswers`
+ * and merges it into the fake-judge script. Keys must match the `id`s the canned arm-C program
+ * sends to `decide`, because the fake judge throws on unscripted ids.
+ */
+export interface TaskJudgeAnswers {
+  [questionId: string]: { noul?: number; choice?: string; score?: number; confidence?: number };
+}
+
+/** A `TaskDef` with the optional, duck-typed offline judge hook. */
+export type TaskWithJudgeAnswers = TaskDef & { judgeAnswers?: TaskJudgeAnswers };
 
 export interface ScriptResult {
   code: number;
