@@ -144,6 +144,15 @@ export interface DecideVerdict {
   stored via the `StoragePort` as JSON containing the verdict **without** `latencyMs`/`cached`.
   A hit returns the cached verdict with `cached: true`, `latencyMs: 0`. A question in a batch may
   hit while its siblings miss — but a **batch request is skipped only if every question hits**.
+
+  **Ratified (2026-10-16, worker A):** on a hit, `escalate`/`reason` are **recomputed** from the
+  stored `confidence` and the *current* effective threshold — never copied from the stored entry,
+  since the call-level `escalateBelow` is not part of the key. A stored entry whose `id`/`mode` do
+  not match the question being asked is a **miss**, not a hit. An **unusable answer is never
+  cached**: `unusable` cannot be reconstructed from a cached verdict (`confidence: 0` is also a
+  legitimate coin-flip `noul`), so caching one would let a later read silently downgrade
+  `escalate: true` to `false` and trust a placeholder `value`. A cached entry therefore always
+  carries a trustworthy `confidence`.
 - **Decision log.** Register one entry per `decide` call (not per question) through the injected
   `log` sink: `{ at, modelId, latencyMs, cached, questionIds, verdicts, usage }` (`at` = epoch ms),
   JSON-safe. The plugin wires this into `ctx.storage` (keys `decide/log/<iso>-<sha8>`); the harness wires it
