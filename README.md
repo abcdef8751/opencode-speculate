@@ -51,8 +51,9 @@ used — see the measured finding below. The key is resolved from `OPENCODE_API_
 - **Measured live 2026-10-16 (was an assumption before):** the flip **removes** a built-in from the
   agent's direct tool list — it does not duplicate it. Across the 7 requests the probe captured with
   the flip on, the direct list was exactly `question, skill, subagent, webfetch, websearch, execute`;
-  none of the six. That either/or result is the price of the flip: it was repo-scoped at first, and is now
-enabled globally at the user's request, so every session reaches those tools through Code Mode only. A nested
+  none of the six. That either/or result is the price of the flip: it was repo-scoped at first and is
+  now enabled globally at the user's request, so every session reaches those tools through Code Mode
+  only. A nested
   `read` from a Code Mode script does reach the host's tool pipeline, where the leaf permission check
   is applied; whether the approval *prompt* is shown is human-observed in the TUI and is the one item
   still open (`docs/live-probes.md`).

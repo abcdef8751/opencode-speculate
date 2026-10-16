@@ -38,7 +38,8 @@ off the agent's direct tool list into the Code Mode sandbox — it does not dupl
 flip was repo-scoped at first for that reason; it is now **global at the user's request**, which means
 no session on this machine has direct `read`/`grep`/`glob`/`shell`/`edit`/`write`.
 
-Consequence for agents **on this host** (every session, since the flip is global): there are no direct file/shell tools — reach them inside
+Consequence for agents **on this host** (every session, since the flip is global): there are no direct
+file/shell tools — reach them inside
 `execute` via `tools.read({ path })`, `tools.shell({ command })`, `tools.edit({ path, oldString, newString })`,
 `tools.write({ path, content })`, `tools.grep({ pattern, path })`, `tools.glob({ pattern, path })`.
 
