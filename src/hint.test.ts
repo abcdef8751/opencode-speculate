@@ -32,6 +32,40 @@ describe("decideHint", () => {
     expect(hint).toMatch(/array of verdicts/i)
   })
 
+  test("teaches `questions` as a bare question object or an array — never an id-keyed map", () => {
+    const lines = hint.split("\n")
+    const oneLine = lines.find((line) => line.startsWith("one:"))
+    const manyLine = lines.find((line) => line.startsWith("many:"))
+    expect(oneLine).toBeDefined()
+    expect(manyLine).toBeDefined()
+
+    // the one-question form is a bare question object (not `{ <id>: { … } }`)
+    expect(oneLine).toMatch(/questions:\s*\{\s*mode:\s*"/)
+    expect(oneLine).not.toMatch(/questions:\s*\{\s*["']?\w+["']?\s*:\s*\{/)
+    // the multi-question form is an array of question objects
+    expect(manyLine).toMatch(/questions:\s*\[\s*\{\s*mode:\s*"/)
+    expect(manyLine).toMatch(/\]\s*$/)
+
+    // nowhere does the hint show the id-keyed map that the engine rejects at validation
+    expect(hint).not.toMatch(
+      /\{\s*["']?[A-Za-z_][\w-]*["']?\s*:\s*\{\s*mode:\s*["']?(noul|choice|score)["']?/,
+    )
+    expect(hint).toMatch(/never an id-keyed map/i)
+
+    // the copy-ready escalation snippet passes an array too
+    expect(hint).toMatch(/questions:\s*\[\s*\{\s*mode:\s*"noul"/)
+  })
+
+  test("makes the recorded step shape explicit so a copied handler cannot fail", () => {
+    // `seen` holds the { tool, out } entries the script pushed…
+    expect(hint).toMatch(/\{\s*tool,\s*out\s*\}\s*entr/)
+    expect(hint).toMatch(/push\(\{\s*tool:\s*step\.tool,\s*out\s*\}\)/)
+    // …and a step always carries `tool`, so `seen.map(s => s.tool)` is safe
+    expect(hint).toMatch(/step = \{\s*tool,\s*run\(\)\s*\}/)
+    expect(hint).toContain("last: seen.at(-1)")
+    expect(hint).toContain("done: seen.map(s => s.tool)")
+  })
+
   test("covers every verdict field from §1", () => {
     expect(hint).toMatch(/\bvalue\b/)
     expect(hint).toMatch(/\bp\b/)
