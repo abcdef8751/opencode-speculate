@@ -1,0 +1,138 @@
+/**
+ * Structural mirrors of the frozen `decide` contract (`docs/CONTRACTS.md` §1).
+ *
+ * Worker D1 must not depend on `src/decide/index.ts` existing in its worktree (worker A owns that
+ * file and it may not be merged yet), yet it has to type the seam. These declarations are
+ * *structural mirrors* of §1 — same names, same shapes — used for the injected factory seam and for
+ * the offline dev shim in `../runner/fallback/`. When the real module is present the loader
+ * (`../runner/sources.ts`) prefers it and asserts a runtime shape check.
+ *
+ * If §1 changes, update this file — do NOT change the contract.
+ */
+
+import type { Json } from "../types.ts";
+
+export const DECIDE_TOOL_NAME = "decide";
+export const DECIDE_NAMESPACE = "typesafe";
+
+export interface NoulQuestion {
+  mode: "noul";
+  id: string;
+  criterion?: string;
+  criteria: { true: string; false: string };
+  escalateBelow?: number;
+}
+export interface ChoiceQuestion {
+  mode: "choice";
+  id: string;
+  criterion?: string;
+  options: Record<string, string | null>;
+  escalateBelow?: number;
+}
+export interface ScoreQuestion {
+  mode: "score";
+  id: string;
+  criterion?: string;
+  levels: string[];
+  escalateBelow?: number;
+}
+export type DecideQuestion = NoulQuestion | ChoiceQuestion | ScoreQuestion;
+
+export interface DecideCall {
+  state: string | Json;
+  questions: DecideQuestion | DecideQuestion[];
+  escalateBelow?: number;
+  model?: string;
+  cache?: boolean;
+  timeoutMs?: number;
+}
+
+export interface DecideVerdict {
+  id: string;
+  mode: "noul" | "choice" | "score";
+  value: boolean | string | number;
+  p?: number;
+  probabilities?: Record<string, number>;
+  confidence: number;
+  modelId: string;
+  latencyMs: number;
+  cached: boolean;
+  escalate: boolean;
+  reason?: string;
+}
+
+export interface SystemOneQuestion {
+  type: "noul" | "choice" | "score";
+  instructions?: string;
+  criteria?: Json;
+}
+export interface SystemOneRequest {
+  state: Json;
+  questions: Record<string, SystemOneQuestion>;
+  model?: string;
+}
+export interface SystemOneAnswer {
+  type: string;
+  noul?: number;
+  choice?: string;
+  score?: number;
+  confidence?: number | null;
+  probabilities?: Record<string, number>;
+  legend?: Record<string, string>;
+}
+export interface SystemOneResult {
+  model: string;
+  answers: Record<string, SystemOneAnswer>;
+  usage?: { input_tokens: number | null; output_tokens: number | null };
+}
+
+export interface Judge {
+  readonly modelId: string;
+  systemOne(
+    req: SystemOneRequest,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<SystemOneResult>;
+}
+
+export interface StoragePort {
+  get(key: string): Promise<Json | undefined>;
+  set(key: string, value: Json): Promise<void>;
+}
+
+/** One decision-log entry, as emitted by `createDecideRuntime`'s `log` sink. */
+export interface DecideLogEntry {
+  at: number;
+  modelId: string;
+  latencyMs: number;
+  cached: boolean;
+  questionIds: string[];
+  verdicts: DecideVerdict[];
+  usage?: { input_tokens: number | null; output_tokens: number | null };
+}
+
+export interface DecidePluginTool {
+  name: string;
+  description: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  options: { namespace: string; codemode: true; pinned: true } | undefined;
+  execute(input: unknown, context?: unknown): Promise<{ output: DecideVerdict | DecideVerdict[]; content: string }>;
+}
+
+export interface DecideRuntime {
+  call(call: DecideCall): Promise<DecideVerdict | DecideVerdict[]>;
+  tool: DecidePluginTool;
+}
+
+export interface DecideRuntimeDeps {
+  judge: Judge;
+  storage: StoragePort;
+  log?: (entry: Json) => void | Promise<void>;
+  now?: () => number;
+  hash?: (input: string) => string;
+}
+
+export type DecideRuntimeFactory = (deps: DecideRuntimeDeps) => DecideRuntime;
+
+/** Sink used by D1 to capture §1 decision-log entries into an `ArmResult`. */
+export type DecideLogSink = (entry: DecideLogEntry) => void;
