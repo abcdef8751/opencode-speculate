@@ -1,26 +1,18 @@
 import { describe, expect, test } from "bun:test"
-import { createJevJudge, DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from "./jev"
-import type { SystemOneRequest } from "./types"
+import {
+  createJevJudge,
+  DEFAULT_JEV_BASE_URL,
+  DEFAULT_JEV_MODEL,
+  JEV_USER_AGENT,
+} from "./jev"
 
-/**
- * A duck-typed Response so the SDK's `bufferResponse` (which calls `response.clone()` and
- * `response.body.getReader()`) does not trip Bun's "Body already used" clone quirk. No network.
- */
-function jsonResponse(body: unknown, status = 200): Response {
-  const text = JSON.stringify(body)
-  const headers = new Headers({ "content-type": "application/json" })
-  return {
-    ok: status >= 200 && status < 300,
+/** A real `Response` is fine now: our client reads the body exactly once. No network. */
+function jsonResponse(body: unknown, status = 200, statusText = ""): Response {
+  return new Response(JSON.stringify(body), {
     status,
-    headers,
-    body: null,
-    clone(): Response {
-      return this as unknown as Response
-    },
-    async text(): Promise<string> {
-      return text
-    },
-  } as unknown as Response
+    statusText,
+    headers: { "content-type": "application/json" },
+  })
 }
 
 interface Captured {
@@ -37,10 +29,12 @@ function capturingFetch(respond: () => Response): { fetch: typeof fetch; calls: 
   return { fetch: fetchImpl, calls }
 }
 
-const question = { q: { type: "noul" as const, instructions: "is it?", criteria: { true: "y", false: "n" } } }
+const question = {
+  q: { type: "noul" as const, instructions: "is it?", criteria: { true: "y", false: "n" } },
+}
 
 describe("createJevJudge", () => {
-  test("posts the OpenCode Console endpoint with the SDK shape and maps the response", async () => {
+  test("posts the OpenCode Console endpoint with the contract headers/body and maps the response", async () => {
     const { fetch, calls } = capturingFetch(() =>
       jsonResponse({
         model: "jev-1.13-free",
@@ -57,10 +51,10 @@ describe("createJevJudge", () => {
     expect(calls[0]!.init.method).toBe("POST")
     const headers = new Headers(calls[0]!.init.headers)
     expect(headers.get("authorization")).toBe("Bearer test-key")
-    // Never a custom UA: Cloudflare 1010-blocks unknown agents on this host.
-    expect(headers.get("user-agent")).toMatch(/^typesafe-sdk\//)
-    // compression: false ⇒ no request-body compression header.
-    expect(headers.get("content-encoding")).toBeNull()
+    expect(headers.get("content-type")).toBe("application/json")
+    expect(headers.get("accept")).toBe("application/json")
+    // A normal UA: Cloudflare 1010-blocks unknown agents on this host.
+    expect(headers.get("user-agent")).toBe(JEV_USER_AGENT)
 
     const body = JSON.parse(String(calls[0]!.init.body)) as Record<string, unknown>
     expect(body.state).toBe("hello")
@@ -74,11 +68,11 @@ describe("createJevJudge", () => {
 
   test("honours baseURL/model overrides and a per-call model", async () => {
     const { fetch, calls } = capturingFetch(() =>
-      jsonResponse({ model: "custom", answers: {}, usage: { input_tokens: null, output_tokens: null } }),
+      jsonResponse({ model: "custom", answers: {} }),
     )
     const judge = createJevJudge({
       apiKey: "k",
-      baseURL: "https://example.test/inference/systemone",
+      baseURL: "https://example.test/inference/systemone/",
       model: "jev-pinned",
       fetch,
     })
@@ -90,16 +84,58 @@ describe("createJevJudge", () => {
     expect(body.model).toBe("jev-loose")
   })
 
-  test("an HTTP error throws an Error whose message includes the status", async () => {
-    const { fetch } = capturingFetch(() => jsonResponse({ error: { message: "bad key" } }, 401))
+  test("an HTTP error throws an Error whose message includes the status and a body snippet", async () => {
+    const { fetch } = capturingFetch(() =>
+      jsonResponse({ error: { message: "bad key" } }, 401, "Unauthorized"),
+    )
     const judge = createJevJudge({ apiKey: "k", fetch, timeoutMs: 200 })
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/HTTP 401/)
+    await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/bad key/)
   })
 
-  test("a non-retryable 4xx error surfaces the status too", async () => {
-    const { fetch } = capturingFetch(() => jsonResponse({ error: { message: "bad request" } }, 400))
+  test("a non-2xx 400 also surfaces the status", async () => {
+    const { fetch } = capturingFetch(() => jsonResponse({ message: "nope" }, 400))
     const judge = createJevJudge({ apiKey: "k", fetch })
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/HTTP 400/)
+  })
+
+  test("an unusable response throws", async () => {
+    const { fetch } = capturingFetch(() => jsonResponse({ model: "x", answers: null }))
+    const judge = createJevJudge({ apiKey: "k", fetch })
+    await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(
+      /unusable response/,
+    )
+  })
+
+  test("a non-JSON response throws", async () => {
+    const { fetch } = capturingFetch(
+      () => new Response("<html>oops</html>", { status: 200, headers: { "content-type": "text/html" } }),
+    )
+    const judge = createJevJudge({ apiKey: "k", fetch })
+    await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/non-JSON/)
+  })
+
+  test("a timeout aborts the request and names the timeout", async () => {
+    const hangingFetch = ((_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")))
+      })) as unknown as typeof fetch
+    const judge = createJevJudge({ apiKey: "k", fetch: hangingFetch, timeoutMs: 5 })
+    await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(
+      /timeout after 5ms/,
+    )
+  })
+
+  test("a caller AbortSignal aborts the request", async () => {
+    const hangingFetch = ((_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")))
+      })) as unknown as typeof fetch
+    const judge = createJevJudge({ apiKey: "k", fetch: hangingFetch, timeoutMs: 10_000 })
+    const controller = new AbortController()
+    const pending = judge.systemOne({ state: "s", questions: question }, { signal: controller.signal })
+    controller.abort()
+    await expect(pending).rejects.toThrow(/aborted by caller/)
   })
 
   test("requires an apiKey", () => {
