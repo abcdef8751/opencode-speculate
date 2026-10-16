@@ -225,6 +225,13 @@ export function createDecideRuntime(deps: /* same as above */): {
 `src/index.ts` (owned by the orchestrator) imports only `createDecideTool`, `DECIDE_*`,
 `createDecideRuntime`, `createJevJudge`, and the two types `Judge`/`StoragePort`.
 
+**Ratified refinement (2026-10-16, worker A):** for `choice`, when the backend omits
+`probabilities`, derive `confidence` from the answer's own `confidence` field rather than reporting
+`0` (the §1 percentile formula still wins whenever `probabilities` are present). This matters for
+the harness `fakeJudge`, which returns `{type:"choice", choice, confidence}` and no probabilities.
+A `choice` label that is not one of the declared `options` is an *unusable* answer → escalate with
+a reason, never a silent verdict.
+
 **Input schema shape** (`DECIDE_INPUT_SCHEMA`, `additionalProperties: false`):
 
 ```jsonc
@@ -414,6 +421,21 @@ The shared types file **`harness/types.ts` is owned by the orchestrator and froz
   `harness/pricing.ts`, `harness/sandbox/**` (the Code Mode tool tree + `decide` wiring),
   `harness/README.md`.
 - **D2 owns**: `harness/tasks/**`, `harness/fixtures/**`, `harness/drivers/**`.
+
+**Frozen `ToolBox` tool-input shapes** (ratified 2026-10-16 from D2's canned programs; the mock run
+fails loudly if `ToolBox` disagrees, so these are the authority for both sides):
+
+| name | input | output |
+| --- | --- | --- |
+| `read` | `{ path }` | file text (string) |
+| `grep` | `{ pattern, path }` | `{ matches \| files \| paths }` or text |
+| `glob` | `{ pattern }` | `{ files \| paths }` or text |
+| `write` | `{ path, content }` | confirmation text |
+| `edit` | `{ path, find, replace }` | confirmation text |
+| `shell` | `{ command }` | `{ stdout, stderr, exitCode }` or text |
+
+Callers read outputs leniently (a string, or `{ content | text }`, or `{ files | matches | paths }`),
+so a richer return object is fine as long as those keys exist.
 
 Two more frozen entry points (D2 owns the files, D1 imports them):
 
