@@ -211,14 +211,14 @@ describe("decide detection", () => {
   test("#3 an exact bare decide beats a derived-namespace id, and names the ambiguity", () => {
     const out = resolveOne([entry("decide"), entry("foo_decide")])
     expect(out.codeModePath).toBe("tools.decide")
-    expect(out.note).toContain("other decide-shaped")
+    expect(out.note).toContain("other resolve target")
     expect(out.note).toContain("foo_decide")
   })
 
   test("#3 typesafe beats a bare decide, and names the ambiguity", () => {
     const out = resolveOne([entry("decide"), entry("typesafe_decide", "typesafe")])
     expect(out.codeModePath).toBe("tools.typesafe.decide")
-    expect(out.note).toContain("other decide-shaped")
+    expect(out.note).toContain("other resolve target")
   })
 
   test("#3 the ranking is deterministic regardless of catalog order", () => {
@@ -231,7 +231,7 @@ describe("decide detection", () => {
   test("#2 (regression) an options-namespaced stray loses to a bare decide", () => {
     const out = resolveOne([entry("decide"), entry("other_decide", "other")])
     expect(out.codeModePath).toBe("tools.decide")
-    expect(out.note).toContain("other decide-shaped")
+    expect(out.note).toContain("other resolve target")
   })
 
   test("#5 duplicate ids are ordered by namespace, independent of catalog order", () => {
@@ -246,22 +246,44 @@ describe("decide detection", () => {
   test("#1 spellings that resolve to the same path are not an ambiguity", () => {
     const derived = resolveOne([entry("foo_decide"), entry("foo.decide")])
     expect(derived.codeModePath).toBe("tools.foo.decide")
-    expect(derived.note).not.toContain("other decide-shaped")
+    expect(derived.note).not.toContain("other resolve target")
 
     const options = resolveOne([entry("typesafe_decide"), entry("decide", "typesafe")])
     expect(options.codeModePath).toBe("tools.typesafe.decide")
-    expect(options.note).not.toContain("other decide-shaped")
+    expect(options.note).not.toContain("other resolve target")
   })
 
-  test("#3 a multi-segment id yields no fabricated path (UNKNOWN instead)", () => {
-    for (const id of ["a_b_decide", "x.y_decide", "typesafe_decide_decide"]) {
+  test("#3/S1 a multi-segment or non-identifier id is seen but not derivable", () => {
+    for (const id of ["a_b_decide", "x.y_decide", "typesafe_decide_decide", "a-b_decide", "2x_decide"]) {
       const out = resolveOne([entry(id)])
       expect(out.found).toBe(false)
+      // No fabricated call path is emitted...
       expect(out.codeModePath).toBeUndefined()
-      expect(out.note).not.toContain("tools.")
+      expect(out.note).not.toContain("→ call it as")
+      // ...but the id is surfaced as *seen*, not as absent.
+      expect(out.unresolved?.map((u) => u.id)).toEqual([id])
+      expect(out.note).toContain(id)
+      expect(out.note).not.toContain("not visible")
     }
-    // A single-segment id still derives its namespace.
+    // A valid single-segment identifier still derives its namespace.
     expect(resolveOne([entry("typesafe_decide")]).codeModePath).toBe("tools.typesafe.decide")
+  })
+
+  test("S1 a not-derivable sibling is surfaced even when another candidate resolves", () => {
+    const out = resolveOne([entry("typesafe_decide", "typesafe"), entry("a_b_decide")])
+    expect(out.found).toBe(true)
+    expect(out.codeModePath).toBe("tools.typesafe.decide")
+    expect(out.unresolved?.map((u) => u.id)).toEqual(["a_b_decide"])
+    expect(out.note).toContain("seen but not derivable")
+    expect(out.note).toContain("a_b_decide")
+  })
+
+  test("#1 the ambiguity count is of resolve targets, and same-path siblings are omitted", () => {
+    const out = resolveOne([entry("typesafe_decide", "typesafe"), entry("decide", "typesafe"), entry("other_decide")])
+    expect(out.codeModePath).toBe("tools.typesafe.decide")
+    expect(out.note).toContain("1 other resolve target")
+    expect(out.note).toContain('"other_decide"')
+    expect(out.note).not.toContain('"typesafe_decide"')
   })
 
   test("THE BUG: present only in the later ctx.tool.list() view → still found", () => {
@@ -390,5 +412,34 @@ describe("live-builtins CLI: decide honesty (#1, #6)", () => {
     expect(result.stdout).toContain("views checked")
     expect(result.stdout).not.toContain("not loaded")
     expect(result.stdout).not.toContain("is not loaded")
+  })
+
+  test("S1 the report says 'seen but not derivable', never 'not visible', for a_b_decide", () => {
+    const file = tmpStateFile()
+    writeFileSync(
+      file,
+      JSON.stringify(
+        makeState({
+          transform: {
+            runs: 1,
+            pre: [entry("a_b_decide")],
+            post: [entry("a_b_decide")],
+            report: { flipped: [], already: [], skipped: [] },
+          },
+          catalogAfterTransforms: null,
+        }),
+      ),
+    )
+    const result = out(runCli(file))
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("SEEN BUT NOT DERIVABLE")
+    expect(result.stdout).toContain("a_b_decide")
+    expect(result.stdout).toContain("decide-shaped id seen but its namespace is not derivable")
+    expect(result.stdout).not.toContain("not visible from any catalog view")
+
+    // The signal also surfaces as a field in the recomputed JSON.
+    const json = out(runCli(file, ["--json"]))
+    expect(json.code).toBe(0)
+    expect(JSON.parse(json.stdout).decide.unresolved[0].id).toBe("a_b_decide")
   })
 })
