@@ -169,8 +169,9 @@ describe("evaluateGate", () => {
     expect(gate.escalationLow).toBe(true);
     expect(gate.pass).toBe(false);
     expect(gate.notes.join(" ")).toContain("arm A was CUT OFF mid-task in 1 run(s)");
-    expect(gate.notes.join(" ")).toContain("baseline arm A was truncated");
+    expect(gate.notes.join(" ")).toContain("baseline arm A is not a valid baseline");
     expect(gate.notes.join(" ")).toContain("--max-turns");
+    expect(gate.notes.join(" ")).not.toContain("is not healthy (ok="); // no misleading ok=1/1 line
   });
 
   test("truncation in a non-baseline arm is annotated but does not block", () => {

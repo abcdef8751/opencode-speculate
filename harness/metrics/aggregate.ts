@@ -196,18 +196,15 @@ export function evaluateGate(summary: Record<ArmID, ArmSummary>, opts: GateOptio
   }
   if (baselineTruncated) {
     notes.push(
-      `baseline arm A was truncated — a truncated run cannot be a baseline (raise \`--max-turns\` and re-run); gate cannot pass`,
+      `baseline arm A is not a valid baseline — see the truncation note above; gate cannot pass (raise \`--max-turns\` and re-run)`,
     );
+  } else if (a.runs === 0) {
+    notes.push("baseline arm A produced no runs — its cache-read mean cannot be a baseline");
+  } else if (!baselineHealthy) {
+    notes.push(`baseline arm A is not healthy (ok=${a.ok}/${a.runs}); its cache-read mean is not a trustworthy baseline — gate cannot pass`);
   }
   if (errors.length > 0) {
     notes.push(`harness-level errors (ok/runs): ${errors.join(" ")} — means include failed runs`);
-  }
-  if (!baselineHealthy) {
-    notes.push(
-      a.runs === 0
-        ? "baseline arm A produced no runs — its cache-read mean cannot be a baseline"
-        : `baseline arm A is not healthy (ok=${a.ok}/${a.runs}); its cache-read mean is not a trustworthy baseline — gate cannot pass`,
-    );
   }
   if (!challengerHasEvidence) {
     notes.push("arm C has no successful run — there is no evidence for a win");
