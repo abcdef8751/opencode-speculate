@@ -517,7 +517,8 @@ export interface DecideLogEntry {
   cached: boolean
   questionIds: string[]
   verdicts: DecideVerdict[]
-  usage: SystemOneUsage
+  /** Backend token usage; `null` for a full cache hit (no backend call happened). */
+  usage: SystemOneUsage | null
 }
 
 /**
@@ -647,20 +648,24 @@ export async function runDecide(
     throw new Error(`decide: internal error — no verdict assembled for "${id}"`)
   })
 
-  // 4. One decision-log entry per Jev request (§1). A batch served entirely from cache issues no
-  // request, so it emits no entry. Never throws into the caller path.
-  if (misses.length > 0) {
-    const entry: Json = {
-      at: startedAt,
-      modelId,
-      latencyMs,
-      cached: false,
-      questionIds: order,
-      verdicts,
-      usage,
-    } as unknown as Json
-    await safeLog(deps.log, entry)
+  // 4. One decision-log entry per `decide` call (§1) — a real request OR a full cache hit. Never
+  // throws into the caller path.
+  const servedFromCache = misses.length === 0
+  if (servedFromCache) {
+    // No request ⇒ no response model; the cached verdicts carry the model that produced them.
+    const first = verdicts[0]
+    if (first !== undefined) modelId = first.modelId
   }
+  const entry: Json = {
+    at: startedAt,
+    modelId,
+    latencyMs,
+    cached: servedFromCache,
+    questionIds: order,
+    verdicts,
+    usage: servedFromCache ? null : usage,
+  } as unknown as Json
+  await safeLog(deps.log, entry)
 
   if (single) {
     const verdict = verdicts[0]

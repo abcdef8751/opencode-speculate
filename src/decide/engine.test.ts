@@ -595,7 +595,7 @@ describe("fail loud", () => {
  * ------------------------------------------------------------------ */
 
 describe("decision log", () => {
-  test("exactly one entry per request, with the contract shape", async () => {
+  test("exactly one entry per decide call, with the contract shape", async () => {
     const judge = createJudge(() =>
       answers({
         a: { type: "noul", noul: 0.9 },
@@ -621,14 +621,30 @@ describe("decision log", () => {
     expect(() => JSON.stringify(entry)).not.toThrow()
   })
 
-  test("a full-cache-hit batch emits no log entry (no Jev request)", async () => {
+  test("a full-cache-hit batch emits its own entry (cached:true, no usage)", async () => {
     const judge = createJudge(() => answers({ a: { type: "noul", noul: 0.9 } }))
     const { entries, log } = createLog()
     const d: EngineDeps = { ...deps(judge, log) }
+
     await runDecide(d, { state: "s", questions: qa })
-    expect(entries).toHaveLength(1) // the one real request
     await runDecide(d, { state: "s", questions: qa })
-    expect(entries).toHaveLength(1) // all-cached ⇒ no request ⇒ no entry
+
+    // Two decide calls ⇒ two entries; only the first issued a backend request.
+    expect(entries).toHaveLength(2)
+    const first = entries[0] as Record<string, unknown>
+    const second = entries[1] as Record<string, unknown>
+    expect(first.cached).toBe(false)
+    expect(first.latencyMs).toBe(0)
+    expect(first.usage).toEqual({ input_tokens: 11, output_tokens: 7 })
+
+    expect(second.cached).toBe(true)
+    expect(second.latencyMs).toBe(0)
+    expect(second.usage).toBeNull()
+    expect(second.modelId).toBe("jev-response")
+    expect(second.questionIds).toEqual(["a"])
+    expect((second.verdicts as DecideVerdict[]).map((v) => v.id)).toEqual(["a"])
+    expect(() => JSON.stringify(second)).not.toThrow()
+
     expect(judge.calls).toHaveLength(1)
   })
 
