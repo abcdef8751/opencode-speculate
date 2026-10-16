@@ -9,8 +9,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChatMessage, ModelDriver, ToolDescriptor } from "../types.ts";
 import { TASKS } from "../tasks/index.ts";
+import type { TaskWithJudgeAnswers } from "../tasks/util.ts";
 import { createFakeJudge } from "./fake-judge.ts";
-import { MOCK_ARM_A_WRITES, createMockDriver, detectArm } from "./mock.ts";
+import {
+  MOCK_ARM_A_WRITES,
+  MOCK_DECIDE_QUESTION_ID,
+  MOCK_PROGRAMS,
+  createMockDriver,
+  detectArm,
+} from "./mock.ts";
 import { createOpenCodeCliDriver, parseOpenCodeRunOutput } from "./opencode-cli.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -287,6 +294,98 @@ describe("createMockDriver", () => {
     }
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * arm C decide wiring: §1 question shape + judgeAnswers plumbing
+ * ------------------------------------------------------------------ */
+
+/** The escalation threshold the canned `log-triage` program passes to `decide`. */
+const ESCALATION_THRESHOLD = 0.5;
+/** Tasks whose canned arm-C program is designed to make `d.escalate` true. */
+const ESCALATING_TASK_IDS = ["log-triage"] as const;
+
+describe("arm C decide wiring", () => {
+  test("the canned decide call uses the §1 ARRAY shape, never the Jev id-keyed wire map", () => {
+    for (const task of TASKS) {
+      const program = MOCK_PROGRAMS[task.id]?.C;
+      expect(program).toBeDefined();
+      // §1: `questions` is `DecideQuestion | DecideQuestion[]`; a script passes one of those.
+      expect(program).toContain("questions: [");
+      expect(program).toContain(`id: "${MOCK_DECIDE_QUESTION_ID}"`);
+      expect(program).toContain('mode: "noul"');
+      // The wire map (`questions: { <id>: { … } }`) is built inside the tool, never by a script.
+      expect(program).not.toMatch(/questions:\s*\{/);
+      expect(program).toContain("await tools.typesafe.decide({");
+      // The plan's handler, verbatim, still runs on a single verdict.
+      expect(program).toContain('if (d.escalate) { console.log("[escalate]", d.reason, item); break }');
+      expect(program).toContain("const d = verdicts[0];");
+    }
+  });
+
+  test("the arm-C program still compiles after the shape change", () => {
+    for (const task of TASKS) {
+      const program = MOCK_PROGRAMS[task.id]?.C as string;
+      expect(() =>
+        new Function("tools", "console", `return (async () => {\n${program}\n})();`),
+      ).not.toThrow();
+    }
+  });
+
+  test("exactly the designed task(s) pass a decide escalation threshold", () => {
+    const withThreshold = TASKS.filter((task) => (MOCK_PROGRAMS[task.id]?.C ?? "").includes("escalateBelow")).map(
+      (task) => task.id,
+    );
+    expect(withThreshold.sort()).toEqual([...ESCALATING_TASK_IDS].sort());
+  });
+
+  test("every task scripts the question id its canned program sends (fake judge throws otherwise)", () => {
+    for (const task of TASKS) {
+      const answers = (task as TaskWithJudgeAnswers).judgeAnswers;
+      expect(answers).toBeDefined();
+      const entry = answers?.[MOCK_DECIDE_QUESTION_ID];
+      expect(entry).toBeDefined();
+      expect(typeof entry?.noul).toBe("number");
+    }
+  });
+
+  test("the escalating task scripts a low-confidence noul that crosses its threshold", () => {
+    for (const task of TASKS) {
+      const entry = (task as TaskWithJudgeAnswers).judgeAnswers?.[MOCK_DECIDE_QUESTION_ID];
+      // §1 noul confidence is |2p - 1|.
+      const confidence = Math.abs(2 * (entry?.noul ?? 0.5) - 1);
+      const escalates = confidence < ESCALATION_THRESHOLD;
+      expect(`${task.id}:${escalates}`).toBe(
+        `${task.id}:${(ESCALATING_TASK_IDS as readonly string[]).includes(task.id)}`,
+      );
+    }
+  });
+
+  test("the fake judge built from a task's judgeAnswers answers the program's request", async () => {
+    for (const task of TASKS) {
+      const script = (task as TaskWithJudgeAnswers).judgeAnswers ?? {};
+      const judge = createFakeJudge(script);
+      // Exactly the request the canned program sends: one noul question, id "actionable",
+      // criteria `{ true, false }` (the tool turns that into the wire shape).
+      const result = await judge.systemOne({
+        state: { file: "x" },
+        questions: {
+          [MOCK_DECIDE_QUESTION_ID]: { type: "noul", criteria: { true: "yes", false: "no" } },
+        },
+      });
+      const answer = result.answers[MOCK_DECIDE_QUESTION_ID];
+      expect(answer?.type).toBe("noul");
+      expect(answer?.noul).toBe(script[MOCK_DECIDE_QUESTION_ID]?.noul);
+    }
+  });
+
+  test("a task without judgeAnswers would fail loud (documents why the field is required)", async () => {
+    const judge = createFakeJudge({});
+    await expect(
+      judge.systemOne({ state: "x", questions: { [MOCK_DECIDE_QUESTION_ID]: { type: "noul" } } }),
+    ).rejects.toThrow(/no scripted answer/);
+  });
+});
+
 
 /* ------------------------------------------------------------------ *
  * opencode CLI driver

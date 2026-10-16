@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TASKS, getTask } from "./index.ts";
 import type { TaskDef } from "../types.ts";
+import type { TaskWithJudgeAnswers } from "./util.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const TMP_ROOT = existsSync("/tmp/opencode") ? "/tmp/opencode" : tmpdir();
@@ -163,6 +164,20 @@ describe("TASKS catalog", () => {
     const first = TASKS[0] as TaskDef;
     expect(getTask(first.id)).toBe(first);
     expect(getTask("no-such-task")).toBeUndefined();
+  });
+
+  test("every task carries offline judgeAnswers for its arm-C decide call", () => {
+    // Duck-typed hook read by D1's orchestrator; the fake judge throws on unscripted ids.
+    for (const task of TASKS) {
+      const answers = (task as TaskWithJudgeAnswers).judgeAnswers;
+      expect(`${task.id}:${answers === undefined ? "missing" : "present"}`).toBe(`${task.id}:present`);
+      const ids = Object.keys(answers ?? {});
+      expect(ids.length).toBeGreaterThan(0);
+      for (const id of ids) {
+        expect(id.length).toBeGreaterThan(0);
+        expect(typeof answers?.[id]?.noul).toBe("number");
+      }
+    }
   });
 });
 
