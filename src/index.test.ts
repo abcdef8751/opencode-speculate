@@ -249,6 +249,36 @@ describe("plugin setup()", () => {
     expect(second.output[0]!.cached).toBe(true)
     // the cache key used the engine's *default* sha256 hash, and a hit made no network call
     expect(calls).toBe(1)
+
+    // §1: one entry per call, so the hit emits one too — and *through the plugin's own sink*
+    // its shape must be the contract shape, not just "an entry exists".
+    const logKeys = [...f.store.keys()].filter((k) => k.startsWith("decide/log/"))
+    expect(logKeys).toHaveLength(2)
+    const entries = logKeys
+      .map((k) => f.store.get(k))
+      .sort((a, b) => Number((a as { cached: boolean }).cached) - Number((b as { cached: boolean }).cached))
+    expect((entries[0] as { cached: boolean; usage: unknown }).cached).toBe(false)
+    expect((entries[0] as { usage: unknown }).usage).not.toBeNull()
+    const hit = entries[1] as { cached: boolean; latencyMs: number; usage: unknown; questionIds: string[] }
+    expect(hit.cached).toBe(true)
+    expect(hit.latencyMs).toBe(0)
+    expect(hit.usage).toBeNull()
+    expect(hit.questionIds).toEqual(["q"])
+  })
+
+  test("identical entries in the same millisecond do not overwrite each other", async () => {
+    globalThis.fetch = (async () =>
+      fakeSystemOneResponse({ q: { type: "noul", noul: 0.9 } })) as unknown as typeof fetch
+
+    const f = fakeContext()
+    await (plugin as { setup(ctx: unknown): Promise<unknown> }).setup(f.ctx)
+    const tool = f.registered[0]!
+    const call = {
+      state: "same",
+      questions: [{ mode: "noul", id: "q", criterion: "c", criteria: { true: "y", false: "n" } }],
+    }
+    await tool.execute!(call, {})
+    await tool.execute!(call, {}) // identical ⇒ same digest; must not overwrite the first
     expect([...f.store.keys()].filter((k) => k.startsWith("decide/log/"))).toHaveLength(2)
   })
 

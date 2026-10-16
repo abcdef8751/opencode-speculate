@@ -131,6 +131,14 @@ export interface DecideVerdict {
 > `id`**. There is a regression guard for prompts in `harness/tasks/tasks.test.ts` and for the hint
 > in `src/hint.test.ts`; keep them when adding examples.
 
+> **Consumption caution (same class, the other direction — caught in review pass 2).** The return
+> shape follows the *input* shape, so an **array** `questions` yields `DecideVerdict[]`. Model-facing
+> examples that branch on a single verdict must therefore destructure or index it —
+> `const [d] = await decide({ questions: [ … ] })` or `const d = verdicts[0]` — before touching
+> `d.escalate`. Reading `.escalate` directly off an array yields `undefined` and the handler becomes
+> **silently dead code** (this happened in the hint, and the test suite pinned it). The guards must
+> assert the extraction, not merely the array form.
+
 ### Rules (binding)
 
 - **Batching.** An array of questions is ONE Jev request (`questions` keyed by `id`).
@@ -165,7 +173,9 @@ export interface DecideVerdict {
   carries a trustworthy `confidence`.
 - **Decision log.** Register one entry per `decide` call (not per question) through the injected
   `log` sink: `{ at, modelId, latencyMs, cached, questionIds, verdicts, usage }` (`at` = epoch ms),
-  JSON-safe. The plugin wires this into `ctx.storage` (keys `decide/log/<iso>-<sha8>`); the harness wires it
+  JSON-safe. The plugin wires this into `ctx.storage` (keys `decide/log/<iso>-<sha8>`; if that key is
+  already taken — two byte-identical entries in the same millisecond, which a hot loop can produce —
+  append `-<n>` rather than silently overwriting the earlier record); the harness wires it
   into an in-memory array. Logging never throws into the caller path.
   A full cache hit **does** emit an entry, with `cached: true` and `latencyMs: 0` — otherwise the
   `cached` field would be dead weight and the audit would silently lose judgements that were served
@@ -298,7 +308,8 @@ latencyMs, cached, escalate]`.
 (d) escalation with/without thresholds, per-question override, and low-confidence reason;
 (e) cache hit path (`cached: true`, no second judge call) and `cache:false` bypass;
 (f) API error → throws, no verdict;
-(g) decision log entry shape, emitted once per request;
+(g) decision log entry shape, emitted once per `decide` call (a full cache hit included, with
+`cached: true`, `latencyMs: 0`, `usage: null`);
 (h) schemas: `DECIDE_INPUT_SCHEMA`/`DECIDE_OUTPUT_SCHEMA` validate the shapes above (assert with
 your own JSON Schema checker or by structural assertions — no new dependency without asking).
 The `Judge` is always injected in tests; **no network in tests**.

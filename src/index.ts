@@ -29,7 +29,7 @@ import { decideHint } from "./hint.ts"
 /**
  * Storage keys.
  *
- * `decide/log/…`  — the contract §1 decision log: one entry per Jev request, emitted by the
+ * `decide/log/…`  — the contract §1 decision log: one entry per `decide` call, emitted by the
  *                   engine's `log` sink, keyed `decide/log/<iso>-<sha8>`.
  * `decide/audit/…` — an *additional* session-scoped audit record written from the tool hook
  *                   (`execute.after`), which is the only place a `sessionID` is available. It
@@ -71,16 +71,22 @@ export default Plugin.define({
     let flipReport: ReturnType<typeof enableBuiltinsForCodeMode> | undefined
 
     /**
-     * Contract §1 decision log: the engine emits one entry per Jev request; we persist it
-     * verbatim (that frozen shape is what consumers read) under `decide/log/<iso>-<sha8>`.
-     * A sink must never throw into the caller path, so failures are swallowed to the log.
+     * Contract §1 decision log: the engine emits one entry per `decide` call (a full cache hit
+     * included); we persist it verbatim (that frozen shape is what consumers read) under
+     * `decide/log/<iso>-<sha8>`. A sink must never throw into the caller path, so failures are
+     * swallowed to the log.
      */
     const writeDecisionLog = async (entry: Json): Promise<void> => {
       try {
         const at = typeof (entry as { at?: unknown })?.at === "number" ? (entry as { at: number }).at : Date.now()
         const iso = new Date(at).toISOString()
         const digest = createHash("sha256").update(JSON.stringify(entry)).digest("hex").slice(0, 8)
-        await storage.set(`${LOG_PREFIX}${iso}-${digest}`.replace(/[:.]/g, "-"), entry)
+        const base = `${LOG_PREFIX}${iso}-${digest}`.replace(/[:.]/g, "-")
+        // Two byte-identical entries in the same millisecond would collide; suffix instead of
+        // silently overwriting an earlier record (contract §1).
+        let key = base
+        for (let n = 1; (await storage.get(key)) !== undefined && n <= 5; n++) key = `${base}-${n}`
+        await storage.set(key, entry)
       } catch (error) {
         console.error(`[decide] decision log write failed: ${String(error)}`)
       }
@@ -145,8 +151,11 @@ export default Plugin.define({
         result?: { output?: unknown }
         error?: { message?: unknown }
       }
-      // The host may report a namespaced tool name (`typesafe.decide`) or the bare one.
-      if (event.tool !== DECIDE_TOOL_NAME && !event.tool.endsWith(`.${DECIDE_TOOL_NAME}`)) return
+      // The host may report a namespaced tool name (`typesafe.decide`) or the bare one. Guard the
+      // type: the event is cast, not validated, and `.endsWith` on a non-string would throw here —
+      // outside the try/catch below.
+      const tool = typeof event.tool === "string" ? event.tool : ""
+      if (tool !== DECIDE_TOOL_NAME && !tool.endsWith(`.${DECIDE_TOOL_NAME}`)) return
       const at = new Date().toISOString()
       const key = `${AUDIT_PREFIX}${at}-${event.id}`.replace(/[:.]/g, "-")
       try {
