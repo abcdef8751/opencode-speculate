@@ -228,6 +228,42 @@ describe("decide detection", () => {
     expect(reversed.codeModePath).toBe("tools.typesafe.decide")
   })
 
+  test("#2 (regression) an options-namespaced stray loses to a bare decide", () => {
+    const out = resolveOne([entry("decide"), entry("other_decide", "other")])
+    expect(out.codeModePath).toBe("tools.decide")
+    expect(out.note).toContain("other decide-shaped")
+  })
+
+  test("#5 duplicate ids are ordered by namespace, independent of catalog order", () => {
+    const forward = resolveOne([entry("decide", "a"), entry("decide", "b")])
+    const reversed = resolveOne([entry("decide", "b"), entry("decide", "a")])
+    expect(forward.namespace).toBe("a")
+    expect(reversed.namespace).toBe("a")
+    expect(forward.codeModePath).toBe("tools.a.decide")
+    expect(reversed.codeModePath).toBe("tools.a.decide")
+  })
+
+  test("#1 spellings that resolve to the same path are not an ambiguity", () => {
+    const derived = resolveOne([entry("foo_decide"), entry("foo.decide")])
+    expect(derived.codeModePath).toBe("tools.foo.decide")
+    expect(derived.note).not.toContain("other decide-shaped")
+
+    const options = resolveOne([entry("typesafe_decide"), entry("decide", "typesafe")])
+    expect(options.codeModePath).toBe("tools.typesafe.decide")
+    expect(options.note).not.toContain("other decide-shaped")
+  })
+
+  test("#3 a multi-segment id yields no fabricated path (UNKNOWN instead)", () => {
+    for (const id of ["a_b_decide", "x.y_decide", "typesafe_decide_decide"]) {
+      const out = resolveOne([entry(id)])
+      expect(out.found).toBe(false)
+      expect(out.codeModePath).toBeUndefined()
+      expect(out.note).not.toContain("tools.")
+    }
+    // A single-segment id still derives its namespace.
+    expect(resolveOne([entry("typesafe_decide")]).codeModePath).toBe("tools.typesafe.decide")
+  })
+
   test("THE BUG: present only in the later ctx.tool.list() view → still found", () => {
     const views: CatalogView[] = [
       { name: "ctx.tool.list()", entries: [entry("read"), entry("typesafe_decide", "typesafe")] },
