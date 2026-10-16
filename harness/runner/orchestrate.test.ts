@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { runHarness } from "./orchestrate.ts";
 import { loadSources, describeOrigins, type Sources } from "./sources.ts";
 import { parseArmMarker } from "./arms/context.ts";
+import { evaluateGate, isTruncated } from "../metrics/index.ts";
 import { loadSources as loadReal } from "./sources.ts";
 import { cleanupTempDirs, replayDriver, response, tempDir, testTask, writeFiles } from "./testing.ts";
 import type { ModelDriver, TaskDef } from "../types.ts";
@@ -235,8 +236,13 @@ describe("runHarness", () => {
     });
     const armA = outcome.report.results[0]!;
     expect(armA.ok).toBe(true);
-    expect(armA.notes.join(" ")).not.toContain("stopped at maxTurns");
+    expect(isTruncated(armA)).toBe(false);
     expect(armA.correctness.passed).toBe(true);
+    // A truncation would be named in the verdict, so prove the gate saw a completed arm A here
+    // (the gate cannot pass on a single-arm run: B/C have no runs — that is a different check).
+    const gateNotes = evaluateGate(outcome.report.summary, { results: outcome.report.results }).notes.join(" ");
+    expect(gateNotes).not.toContain("CUT OFF");
+    expect(gateNotes).not.toContain("truncated");
   });
 
   test("an unknown task is a loud error", async () => {
