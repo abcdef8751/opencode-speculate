@@ -348,12 +348,23 @@ Key resolution order (first hit wins, and `apiKeySource` says which):
    Format: `KEY=VALUE` lines, `#` comments, optional single/double quotes, blank lines ignored.
 4. `auth.json` → `.opencode.key` (dev convenience; disabled when `OPENCODE_DECIDE_ALLOW_AUTH_JSON=0`).
    Never log or return the key anywhere but `apiKey`.
+   Path note: `configDir` defaults to `~/.config/opencode`, so the real OpenCode auth file is at
+   **`<configDir>/../../.local/share/opencode/auth.json`** (`~/.local/share/opencode/auth.json`).
+   An explicit `authJsonPath` wins outright; otherwise try the literal
+   `<configDir>/../.local/share/opencode/auth.json` and then the real `../../` layout.
+   (Corrected 2026-10-16 — worker C caught the original `../` wording as broken.)
 
 Other keys: `OPENCODE_DECIDE_BASE_URL`, `OPENCODE_DECIDE_MODEL`, `OPENCODE_DECIDE_BUILTINS_CODEMODE`
 (`1`/`true`/`yes`, case-insensitive), `OPENCODE_DECIDE_BUILTIN_IDS` (comma list),
 `OPENCODE_DECIDE_HINT` (`0`/`false` disables), `OPENCODE_CONFIG_DIR`.
 `loadConfig` must be **pure/testable**: no `process.exit`, no side effects beyond reads, and it must
 never throw on a missing/unreadable auth.json (return `apiKeySource: "none"`).
+
+Accepted parsing supersets (ratified 2026-10-16, worker C): boolean flags accept
+`1/true/yes/on` and `0/false/no/off` case-insensitively (the contract's minimum was `1`/`true`/
+`yes`); an unquoted `.env` value has a whitespace-preceded `#…` tail stripped as an inline comment;
+an empty or whitespace-only value counts as *absent* (so a copied `.env.example` with
+`OPENCODE_API_KEY=` cannot shadow a real env var).
 
 `src/hint.ts`:
 
