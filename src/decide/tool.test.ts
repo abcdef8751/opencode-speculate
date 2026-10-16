@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createDecideRuntime, createDecideTool, formatVerdictLine, parseDecideInput } from "./tool"
+import { createJevJudge } from "./jev"
 import { DECIDE_INPUT_SCHEMA, DECIDE_OUTPUT_SCHEMA } from "./schema"
 import { DECIDE_NAMESPACE, DECIDE_TOOL_NAME } from "./types"
 import type {
@@ -151,5 +152,39 @@ describe("formatVerdictLine", () => {
       reason: "low",
     }
     expect(formatVerdictLine(verdict)).toBe("x: value=1.25 confidence=0.333 escalate=true")
+  })
+})
+
+describe("end-to-end (offline)", () => {
+  test("createJevJudge + runtime produce verdicts from one injected HTTP response", async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fakeFetch = (async (input: string, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} })
+      return new Response(
+        JSON.stringify({
+          model: "jev-1.13-free",
+          answers: {
+            ok: { type: "noul", noul: 0.96 },
+            who: { type: "choice", choice: "bob", confidence: 1, probabilities: { alice: 0, bob: 1 } },
+          },
+          usage: { input_tokens: 409, output_tokens: 73 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )
+    }) as unknown as typeof fetch
+
+    const judge = createJevJudge({ apiKey: "test-key", fetch: fakeFetch })
+    const { tool } = createDecideRuntime({ judge, storage: memoryStorage(), now: () => 0 })
+
+    const result = await tool.execute({ state: "who failed?", questions: [qa, qb], cache: false })
+    const output = result.output as DecideVerdict[]
+
+    expect(calls).toHaveLength(1)
+    expect(new Headers(calls[0]!.init.headers).get("authorization")).toBe("Bearer test-key")
+    expect(output.map((v) => v.id)).toEqual(["ok", "who"])
+    expect(output[0]!.value).toBe(true)
+    expect(output[0]!.p).toBeCloseTo(0.96, 10)
+    expect(output[1]!.value).toBe("bob")
+    expect(output.every((v) => v.modelId === "jev-1.13-free")).toBe(true)
   })
 })
