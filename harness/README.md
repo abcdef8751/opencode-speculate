@@ -75,7 +75,11 @@ labelled dev shim in `harness/runner/fallback/**`:
   run offline. It is not the contract implementation and must not be treated as one.
 
 Every fallback use is reported (`warning:` on stderr, a `modules: tasks=… drivers=… decide=…` note
-in `report.md`). Once D2/A land, the real modules are used and the shim goes dormant. Because the
+in `report.md`). Once D2/A land, the real modules are used and the shim goes dormant — this was
+verified by overlaying `harness/**` on `main` (which already has `src/decide/index.ts`) and running
+`bun run harness --tasks … --arms A,B,C --driver mock`: the report's harness note read
+`modules: tasks=fallback drivers=fallback decide=module`, arm C used the real engine, and
+`bun test harness` + `bun run typecheck` stayed green. Because the
 fallback judge only knows the fallback question ids, arm C escalates ("no usable answer") for real
 D2 tasks unless the task carries a duck-typed `judgeAnswers` map or `judgeScript` is supplied to
 `runHarness()`.
@@ -185,8 +189,8 @@ Assumptions and limitations (not exercised in this run — it needs a live model
 ## Known contract friction (for the orchestrator)
 
 1. **Arm selection** is not expressible in the frozen `ModelDriver` — see "Driver conventions".
-2. **`shell` input shape** is ours: argv-style, never a shell string (the contract requires no
-   shell interpolation).
+2. **ToolBox shapes** are now ratified in §4 and implemented exactly (including `edit`'s
+   `find`/`replace` and `shell`'s `exitCode`); `oldString`/`newString` remain accepted aliases.
 3. **`ok` for arms B/C** means "the Code Mode program ran"; script-level failures are counted in
    `scriptFailures`. The frozen doc only says `ok` is "not the same as task correctness".
 4. **`scriptFailures`** is defined here as one point per failed execution plus parse-shaped
