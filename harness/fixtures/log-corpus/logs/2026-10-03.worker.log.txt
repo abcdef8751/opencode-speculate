@@ -1,0 +1,10 @@
+2026-10-03T10:00:01Z ERROR code=E104 svc=worker msg=job 41 exhausted retries
+2026-10-03T10:00:02Z ERROR code=E104 svc=worker msg=job 42 exhausted retries
+2026-10-03T10:00:03Z ERROR code=E104 svc=worker msg=job 43 exhausted retries
+2026-10-03T10:00:04Z ERROR code=E104 svc=worker msg=job 44 exhausted retries
+2026-10-03T10:00:05Z ERROR code=E104 svc=worker msg=job 45 exhausted retries
+2026-10-03T10:00:06Z ERROR code=E104 svc=worker msg=job 46 exhausted retries
+2026-10-03T10:00:07Z ERROR code=E104 svc=worker msg=job 47 exhausted retries
+2026-10-03T10:00:08Z ERROR code=E104 svc=worker msg=job 48 exhausted retries
+2026-10-03T10:00:09Z ERROR code=E104 svc=worker msg=job 49 exhausted retries
+2026-10-03T10:00:10Z WARN  code=E999 svc=worker msg=queue depth above watermark
