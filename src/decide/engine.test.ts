@@ -489,6 +489,64 @@ describe("cache", () => {
     expect(judge.calls).toHaveLength(1)
   })
 
+  test("defect 1: partial-cache batch (hit + miss) recomputes the hit with → without", async () => {
+    const judge = createJudge((req) => {
+      const map: Record<string, SystemOneAnswer> = {}
+      for (const id of Object.keys(req.questions)) {
+        map[id] = id === "b" ? { type: "score", score: 2, confidence: 0.8 } : { type: "noul", noul: 0.6 }
+      }
+      return answers(map)
+    })
+    const d = deps(judge)
+
+    // Warm only "a" WITH a threshold: confidence 0.2 < 0.5 ⇒ escalate.
+    const warm = (await runDecide(d, { state: "s", questions: qa, escalateBelow: 0.5 })) as DecideVerdict
+    expect(warm.escalate).toBe(true)
+    expect(judge.calls).toHaveLength(1)
+
+    // Batch [a, b] with NO threshold: "a" hits, "b" misses ⇒ exactly one request, for "b" only.
+    const out = (await runDecide(d, { state: "s", questions: [qa, qb] })) as DecideVerdict[]
+    expect(judge.calls).toHaveLength(2)
+    expect(Object.keys(judge.calls[1]!.questions)).toEqual(["b"])
+
+    const hit = out.find((v) => v.id === "a")!
+    const miss = out.find((v) => v.id === "b")!
+    expect(hit.cached).toBe(true)
+    expect(hit.escalate).toBe(false)
+    expect(hit.reason).toBeUndefined()
+    expect(miss.cached).toBe(false)
+  })
+
+  test("defect 1: partial-cache batch (hit + miss) recomputes the hit without → with", async () => {
+    const judge = createJudge((req) => {
+      const map: Record<string, SystemOneAnswer> = {}
+      for (const id of Object.keys(req.questions)) {
+        map[id] = id === "b" ? { type: "score", score: 2, confidence: 0.8 } : { type: "noul", noul: 0.6 }
+      }
+      return answers(map)
+    })
+    const d = deps(judge)
+
+    // Warm only "a" WITHOUT a threshold: confidence 0.2 ⇒ no escalation.
+    const warm = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
+    expect(warm.escalate).toBe(false)
+    expect(judge.calls).toHaveLength(1)
+
+    const out = (await runDecide(d, {
+      state: "s",
+      questions: [qa, qb],
+      escalateBelow: 0.5,
+    })) as DecideVerdict[]
+    expect(judge.calls).toHaveLength(2)
+    expect(Object.keys(judge.calls[1]!.questions)).toEqual(["b"])
+
+    const hit = out.find((v) => v.id === "a")!
+    expect(hit.cached).toBe(true)
+    expect(hit.escalate).toBe(true)
+    expect(hit.reason).toBeTruthy()
+    expect(hit.reason).toContain("threshold 0.5")
+  })
+
   test("defect 2: a valid-shaped but foreign entry (wrong id / wrong mode) is a miss", async () => {
     // Wrong id: structurally valid, stored under qa's key but belongs to another question.
     const judge = createJudge(() => answers({ a: { type: "noul", noul: 0.9 } }))
@@ -532,6 +590,42 @@ describe("cache", () => {
     expect(d.storage.map.size).toBe(0)
 
     const second = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
+    expect(second.cached).toBe(false)
+    expect(second.escalate).toBe(true)
+    expect(judge.calls).toHaveLength(2)
+  })
+
+  test("an out-of-options choice answer is never cached, even though its confidence looks high", async () => {
+    // A label outside the declared options still yields a probabilities-derived confidence of 1,
+    // so a cached copy would look completely legitimate on a later hit.
+    const judge = createJudge(() =>
+      answers({ c: { type: "choice", choice: "nope", confidence: 1, probabilities: { nope: 1 } } }),
+    )
+    const d = deps(judge)
+
+    const first = (await runDecide(d, { state: "s", questions: qc })) as DecideVerdict
+    expect(first.value).toBe("nope")
+    expect(first.confidence).toBe(1)
+    expect(first.escalate).toBe(true)
+    expect(first.reason).toContain("not one of the declared options")
+    expect(d.storage.map.size).toBe(0)
+
+    const second = (await runDecide(d, { state: "s", questions: qc })) as DecideVerdict
+    expect(second.cached).toBe(false)
+    expect(second.escalate).toBe(true)
+    expect(judge.calls).toHaveLength(2)
+  })
+
+  test("a missing/unusable score answer is never cached, so it re-hits the backend", async () => {
+    const judge = createJudge(() => answers({})) // no answer for "b"
+    const d = deps(judge)
+
+    const first = (await runDecide(d, { state: "s", questions: qb })) as DecideVerdict
+    expect(first.escalate).toBe(true)
+    expect(first.reason).toContain("no usable score answer")
+    expect(d.storage.map.size).toBe(0)
+
+    const second = (await runDecide(d, { state: "s", questions: qb })) as DecideVerdict
     expect(second.cached).toBe(false)
     expect(second.escalate).toBe(true)
     expect(judge.calls).toHaveLength(2)
@@ -646,6 +740,31 @@ describe("decision log", () => {
     expect(() => JSON.stringify(second)).not.toThrow()
 
     expect(judge.calls).toHaveLength(1)
+  })
+
+  test("a partial-hit batch logs cached:false with the fresh request's real usage", async () => {
+    const judge = createJudge((req) => {
+      const map: Record<string, SystemOneAnswer> = {}
+      for (const id of Object.keys(req.questions)) {
+        map[id] = id === "b" ? { type: "score", score: 2, confidence: 0.8 } : { type: "noul", noul: 0.9 }
+      }
+      return answers(map)
+    })
+    const { entries, log } = createLog()
+    const d: EngineDeps = { ...deps(judge, log) }
+
+    // Warm "a", then a batch where "a" hits and "b" misses — a request IS made.
+    await runDecide(d, { state: "s", questions: qa })
+    await runDecide(d, { state: "s", questions: [qa, qb] })
+
+    expect(entries).toHaveLength(2)
+    const partial = entries[1] as Record<string, unknown>
+    expect(partial.cached).toBe(false)
+    expect(partial.questionIds).toEqual(["a", "b"])
+    expect((partial.verdicts as DecideVerdict[]).map((v) => v.id)).toEqual(["a", "b"])
+    expect(partial.usage).toEqual({ input_tokens: 11, output_tokens: 7 })
+    expect(judge.calls).toHaveLength(2)
+    expect(() => JSON.stringify(partial)).not.toThrow()
   })
 
   test("a throwing log sink never breaks the caller", async () => {

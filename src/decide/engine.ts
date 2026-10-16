@@ -30,7 +30,10 @@ import type {
 export interface EngineDeps {
   judge: Judge
   storage: StoragePort
-  /** One entry per judge request (or per all-cached batch). Must never throw into the caller. */
+  /**
+   * One entry per `decide` call, including a full cache hit (`cached: true`, `latencyMs: 0`,
+   * `usage: null`). Must never throw into the caller.
+   */
   log?: (entry: Json) => void | Promise<void>
   /** Default `Date.now`. */
   now?: () => number
