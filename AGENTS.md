@@ -46,3 +46,9 @@ Notes: a temporary probe shim (`plugins/codemode-builtins-probe.ts`) was used du
 is **already removed** — nothing to reverse. Pre-existing and unrelated: `plugins/ensemble.ts`,
 `plugins/opencode-ensemble/`. Use `opencode reload` rather than `opencode service restart` — a restart
 would kill the session doing the work.
+
+One caveat learned the hard way: run `opencode reload` from a plain terminal, **not** from inside a Code
+Mode `execute` script. The reload tears down the session that is hosting the sandbox, so the running
+script dies with `Tool.Error` mid-way (observed while landing this work). Commands that had already run
+before the reload do take effect — the failure is the script, not the change — but it is impossible to
+see that from the error, so treat any reload-inside-`execute` as an unknown partial state and re-check.
