@@ -138,7 +138,9 @@ undercounts cache reads, which could hand the gate to C. Therefore `pass` additi
 
 Any arm with harness-level errors (`ok < runs`) is listed in the gate's `notes`
 (`harness-level errors (ok/runs): A=1/2 …`). `GateVerdict` is frozen in `harness/types.ts`, so this
-rule surfaces through `pass` and `notes` only.
+rule surfaces through `pass` and `notes` only. Note that for arms B/C `ok` means "the Code Mode
+program executed", so a failed script counts as a harness-level error here; a single failing C run
+does not block the gate (`challengerHasEvidence` needs one), but it is always annotated.
 
 **Synthetic runs carry their caveat in the verdict.** Pass `GateOptions.driver` (the CLI and the
 report pass `RunReport.driver`); when it names the mock driver, the first gate note is
@@ -149,7 +151,8 @@ banner around it.
 ## The sandbox (`harness/sandbox/**`)
 
 `createToolBox({ dir, names })` exposes the six built-ins the `builtins-flip` work toggles —
-`read`, `grep`, `glob`, `shell`, `edit`, `write` — confined to `dir`. `names` honours
+`read`, `grep`, `glob`, `shell`, `edit`, `write` — confined to `dir` (best-effort: see the exact
+guarantees and residual gaps at the end of this section). `names` honours
 `TaskDef.tools`. The inputs/outputs follow the **ratified shapes** in `docs/CONTRACTS.md` §4:
 
 | tool | input | output |
