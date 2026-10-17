@@ -132,7 +132,8 @@ describe("plugin setup()", () => {
     const text = event.system[0]!.text
     expect(text).toContain("tools.typesafe.decide")
     expect(text).toContain("escalate")
-    expect(text).toContain("break")
+    // the handler returns (there is no host-provided loop to break out of)
+    expect(text).toContain("return { stop: true, reason: d.reason }")
     expect(text).toContain("search(")
   })
 

@@ -5,6 +5,11 @@
  *
  * Injected by `src/index.ts` via `ctx.session.hook("context", …)`. Every identifier named
  * here exists in §1 (`DecideQuestion` / `DecideVerdict`); nothing else is invented.
+ *
+ * The escalation snippet is **self-contained and runnable**: it uses only identifiers it defines
+ * (`out`, `d`) plus the Code Mode globals (`tools`, `console`). An earlier version looped over a
+ * host-provided `steps` array that does not exist in the runtime, so a copied handler threw
+ * `steps is not defined`. `src/hint.test.ts` executes this snippet for real to keep that true.
  */
 
 import { DEFAULT_MODEL, type DecideConfig } from "./config.ts"
@@ -33,12 +38,10 @@ export function decideHint(config?: Pick<DecideConfig, "model">): string {
     "Verdict: { id, mode, value, p?, probabilities?, confidence, modelId, latencyMs, cached, escalate, reason? } — `probabilities` is keyed by label (choice) or level index (score); `reason` appears iff `escalate === true`.",
     `\`escalate\` is true when \`confidence < escalateBelow\` (no threshold → never). Pinned model: ${model}.`,
     "",
-    "Escalation handler — `console.log` reaches you as `Logs:`; `break` ends the script:",
-    "const seen = [];                         // you push one { tool, out } entry per step",
-    "for (const step of steps) {               // step = { tool, run() }: one tool call per step",
-    "  const out = await step.run(); seen.push({ tool: step.tool, out });",
-    '  const [d] = await tools.typesafe.decide({ state: out, questions: [{ mode: "noul", id: "goal-met?", criteria: { true: "…", false: "…" } }], escalateBelow: 0.6 });',
-    "  if (d.escalate) { console.log(JSON.stringify({ reason: d.reason, last: seen.at(-1), done: seen.map(s => s.tool) })); break }",
-    "}",
+    "Escalation — stop and report instead of guessing; `console.log` reaches you as `Logs:`:",
+    'const out = await tools.shell({ command: "bun test 2>&1 | tail -40" })   // any step that produces evidence',
+    'const [d] = await tools.typesafe.decide({ state: out.output, questions: [{ mode: "noul", id: "green?", criteria: { true: "all checks pass", false: "a check failed" } }], escalateBelow: 0.6 })',
+    'if (d.escalate) { console.log(JSON.stringify({ reason: d.reason, excerpt: out.output.slice(-800) })); return { stop: true, reason: d.reason } }',
+    "return { green: d.value }",
   ].join("\n")
 }

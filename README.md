@@ -20,7 +20,7 @@ by this project" lists every change outside the repo and how to reverse each one
 | `src/builtins.ts` | flips `options.codemode` on file/shell built-ins (default OFF) | §2 |
 | `probe/live-builtins.ts` | manual live probe: exclusivity caveat, leaf permissions, `decide` path | §2 |
 | `src/config.ts` | env / `.env` / auth.json resolution, feature flags | §3 |
-| `src/hint.ts` | the session-context hint teaching the ≈3-line escalation handler | §3 |
+| `src/hint.ts` | the session-context hint teaching the runnable escalation handler | §3 |
 | `harness/**` | 3 arms × tasks × runs, metrics, report | §4 |
 | `harness/types.ts` | frozen cross-boundary types | — |
 

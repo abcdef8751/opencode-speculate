@@ -10,8 +10,12 @@ const hint = decideHint()
  *
  * §1's "Consumption caution": the return shape follows the input shape, so an ARRAY
  * `questions` argument yields `DecideVerdict[]`. A snippet that passes an array must therefore
- * reduce the result to one verdict (destructure at the call, or index the bound result) before it
- * reads `.escalate` — otherwise the branch is silently dead code.
+ * reduce the result to one verdict (destructure at the call) before it reads `.escalate` —
+ * otherwise the branch is silently dead code.
+ *
+ * The snippet is also run for real below: every identifier in it must exist (`tools`, `console`,
+ * its own `out`/`d`). An earlier version looped over a host-provided `steps` array that the
+ * runtime does not define, so copying it threw `steps is not defined`.
  * ------------------------------------------------------------------ */
 
 const DECIDE_CALL = /tools\.typesafe\.decide\(/
@@ -23,7 +27,7 @@ const PLAIN_CALL = /const\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+tools\.typesafe\.de
 /** The copy-ready escalation snippet, sliced out of the hint — never hardcoded. */
 function escalationSnippet(): string {
   const lines = hint.split("\n")
-  const start = lines.findIndex((line) => line.startsWith("const seen = ["))
+  const start = lines.findIndex((line) => line.startsWith("const out = await tools.shell"))
   expect(start).toBeGreaterThanOrEqual(0)
   return lines.slice(start).join("\n")
 }
@@ -51,65 +55,61 @@ function extractsSingleVerdict(code: string): boolean {
 }
 
 interface SnippetRun {
+  /** What the snippet returned from the (async) script body. */
+  returned: unknown
   /** Everything the snippet passed to `console.log` (surfaced to the model as `Logs:`). */
   logs: string[]
   decideCalls: number
-  stepRuns: string[]
+  shellCalls: number
 }
 
-/** Execute the snippet for real against a fake `tools.typesafe.decide`, fake steps and fake console. */
-async function runEscalationSnippet(code: string): Promise<SnippetRun> {
+/** Execute the snippet for real against fake `tools` and a fake console. */
+async function runEscalationSnippet(code: string, verdict: unknown): Promise<SnippetRun> {
   const logs: string[] = []
-  const stepRuns: string[] = []
   let decideCalls = 0
-  const steps = [
-    {
-      tool: "read",
-      run: async () => {
-        stepRuns.push("read")
-        return "file contents"
-      },
-    },
-    {
-      tool: "shell",
-      run: async () => {
-        stepRuns.push("shell")
-        return "should never run"
-      },
-    },
-  ]
+  let shellCalls = 0
   const tools = {
+    shell: async () => {
+      shellCalls += 1
+      return { output: "FAIL src/auth.test.ts\n1 failing" }
+    },
     typesafe: {
       decide: async () => {
         decideCalls += 1
-        // an array argument ⇒ an array result (§1)
-        return [
-          {
-            id: "goal-met?",
-            mode: "noul",
-            value: false,
-            confidence: 0.31,
-            escalate: true,
-            reason: "confidence 0.31 < 0.6",
-          },
-        ]
+        return verdict
       },
     },
   }
-  const fakeConsole = {
-    log: (value: unknown) => {
-      logs.push(String(value))
-    },
-  }
+  const fakeConsole = { log: (value: unknown) => logs.push(String(value)) }
   const run = new Function(
-    "steps",
     "tools",
     "console",
     `return (async () => {\n${code}\n})()`,
-  ) as (steps: unknown, tools: unknown, console: unknown) => Promise<void>
-  await run(steps, tools, fakeConsole)
-  return { logs, decideCalls, stepRuns }
+  ) as (tools: unknown, console: unknown) => Promise<unknown>
+  const returned = await run(tools, fakeConsole)
+  return { returned, logs, decideCalls, shellCalls }
 }
+
+const UNSURE = [
+  {
+    id: "green?",
+    mode: "noul",
+    value: false,
+    confidence: 0.31,
+    escalate: true,
+    reason: "confidence 0.31 < 0.6",
+  },
+]
+
+const SURE = [
+  {
+    id: "green?",
+    mode: "noul",
+    value: true,
+    confidence: 0.91,
+    escalate: false,
+  },
+]
 
 describe("decideHint", () => {
   test("names the Code Mode tool path and the search fallback", () => {
@@ -162,14 +162,16 @@ describe("decideHint", () => {
     expect(hint).toMatch(/questions:\s*\[\s*\{\s*mode:\s*"noul"/)
   })
 
-  test("makes the recorded step shape explicit so a copied handler cannot fail", () => {
-    // `seen` holds the { tool, out } entries the script pushed…
-    expect(hint).toMatch(/\{\s*tool,\s*out\s*\}\s*entr/)
-    expect(hint).toMatch(/push\(\{\s*tool:\s*step\.tool,\s*out\s*\}\)/)
-    // …and a step always carries `tool`, so `seen.map(s => s.tool)` is safe
-    expect(hint).toMatch(/step = \{\s*tool,\s*run\(\)\s*\}/)
-    expect(hint).toContain("last: seen.at(-1)")
-    expect(hint).toContain("done: seen.map(s => s.tool)")
+  test("the snippet is self-contained — nothing it names comes from the host", () => {
+    const code = escalationSnippet()
+    // the fictional `steps` / `step.run()` loop is gone: no identifier the runtime never defines
+    expect(code).not.toMatch(/\bsteps\b/)
+    expect(code).not.toMatch(/\bstep\.run\b/)
+    expect(code).not.toMatch(/\bseen\b/)
+    // it binds everything from real tool calls and ends in a return
+    expect(code).toMatch(/^const out = await tools\.shell\(/)
+    expect(code).toContain("const [d] = await tools.typesafe.decide(")
+    expect(code.trimEnd().endsWith("return { green: d.value }")).toBe(true)
   })
 
   test("the escalation snippet extracts one verdict from the array result", () => {
@@ -193,16 +195,26 @@ describe("decideHint", () => {
     expect(hint).toContain("before reading `.escalate`")
   })
 
-  test("running the snippet actually fires the handler and breaks", async () => {
-    const { logs, decideCalls, stepRuns } = await runEscalationSnippet(escalationSnippet())
-    expect(decideCalls).toBe(1) // `break` fired after the low-confidence verdict
-    expect(stepRuns).toEqual(["read"]) // the second step never ran
+  test("running the snippet stops and reports when the verdict escalates", async () => {
+    const { returned, logs, decideCalls, shellCalls } = await runEscalationSnippet(
+      escalationSnippet(),
+      UNSURE,
+    )
+    expect(decideCalls).toBe(1)
+    expect(shellCalls).toBe(1)
+    expect(returned).toEqual({ stop: true, reason: "confidence 0.31 < 0.6" })
     expect(logs).toHaveLength(1)
     expect(JSON.parse(logs[0] ?? "null")).toEqual({
       reason: "confidence 0.31 < 0.6",
-      last: { tool: "read", out: "file contents" },
-      done: ["read"],
+      excerpt: "FAIL src/auth.test.ts\n1 failing",
     })
+  })
+
+  test("running the snippet returns the value when the verdict is confident", async () => {
+    const { returned, logs, decideCalls } = await runEscalationSnippet(escalationSnippet(), SURE)
+    expect(decideCalls).toBe(1)
+    expect(returned).toEqual({ green: true })
+    expect(logs).toEqual([])
   })
 
   test("the old shape (array in, no extraction) is dead code the guard rejects", async () => {
@@ -212,11 +224,11 @@ describe("decideHint", () => {
     expect(broken).toContain("const d = await tools.typesafe.decide(")
     expect(extractsSingleVerdict(broken)).toBe(false)
 
-    // and it is dead for real: `d` is an array, `d.escalate` is undefined, nothing logs or breaks
-    const { logs, decideCalls, stepRuns } = await runEscalationSnippet(broken)
-    expect(decideCalls).toBe(2)
-    expect(stepRuns).toEqual(["read", "shell"])
+    // and it is dead for real: `d` is an array, `d.escalate` is undefined, so it never stops
+    const { returned, logs, decideCalls } = await runEscalationSnippet(broken, UNSURE)
+    expect(decideCalls).toBe(1)
     expect(logs).toEqual([])
+    expect(returned).toEqual({ green: undefined })
   })
 
   test("the guard also accepts the index form and the single-object form", () => {
@@ -245,14 +257,14 @@ describe("decideHint", () => {
     expect(hint).toMatch(/\breason\b/)
   })
 
-  test("carries the escalation handler with the break / Logs: / ledger semantics", () => {
-    expect(hint).toMatch(/\bbreak\b/)
+  test("carries the escalation handler with the Logs: / return semantics", () => {
     expect(hint).toContain("console.log")
     expect(hint).toContain("Logs:")
     expect(hint).toContain("reason: d.reason")
-    expect(hint).toContain("seen.at(-1)")
-    expect(hint).toContain("done: seen.map(s => s.tool)")
     expect(hint).toMatch(/JSON\.stringify/)
+    // the handler returns rather than break-ing: there is no host-provided loop to break out of
+    expect(hint).toContain("return { stop: true, reason: d.reason }")
+    expect(hint).toMatch(/stop and report/i)
   })
 
   test("stays under the line cap", () => {

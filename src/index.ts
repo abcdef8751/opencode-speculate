@@ -3,7 +3,7 @@
  *
  * Responsibilities (plan steps 1–3):
  *   1. register `decide` as a pinned, Code-Mode-only plugin tool in the `typesafe` namespace
- *   2. inject the session-context hint that teaches the ≈3-line escalation handler
+ *   2. inject the session-context hint that teaches the runnable escalation handler
  *   3. optionally flip `options.codemode` on the file/shell built-ins (default: OFF)
  *   4. write one durable decision-log entry per `decide` call via the tool hook
  *

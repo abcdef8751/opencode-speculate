@@ -466,9 +466,16 @@ export function decideHint(config?: Pick<DecideConfig, "model">): string
 The hint is injected via `ctx.session.hook("context", …)`. It must be **short** (aim ≤ 25 lines) and
 must cover, in this order: that the tool lives in Code Mode and is called as
 `tools.typesafe.decide(...)` with the fallback "if that path is missing, `search("decide")`";
-the one-question and batch call shapes; the verdict fields; and the ≈3-line escalation handler from
-the plan (`if (d.escalate) { console.log(...); break }`) with `d.reason`, the last tool output and a
-`done` ledger. Every identifier it names must match §1 exactly (a test asserts that).
+the one-question and batch call shapes; the verdict fields; and a **self-contained, runnable**
+escalation handler — a real tool call, then
+`if (d.escalate) { console.log(JSON.stringify({ reason: d.reason, excerpt })); return { stop: true, reason: d.reason } }`
+— with `d.reason` and an excerpt of the last tool output.
+
+Every identifier it names must match §1 exactly (a test asserts that), and **every identifier it
+uses must be defined by the snippet itself or be a Code Mode global** (`tools`, `console`): an
+earlier version looped over a host-provided `steps` array the runtime does not define, so a copied
+handler threw `steps is not defined`. `src/hint.test.ts` executes the snippet for real, both on the
+escalating and the confident path, to keep that true.
 
 **Definition of done (C):** `bun test` green for `src/config.test.ts` (env precedence incl.
 env-file and auth-json fallback, missing auth.json, boolean parsing, quoted values, `#` comments)
