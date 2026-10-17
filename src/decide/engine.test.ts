@@ -10,6 +10,8 @@ import {
   runDecide,
   stableStringify,
   toCachedVerdict,
+  toSystemOneQuestion,
+  fallbackInstructions,
   type EngineDeps,
 } from "./engine"
 import type {
@@ -789,5 +791,41 @@ describe("decision log", () => {
     const out = (await runDecide(d, { state: "s", questions: qa })) as DecideVerdict
     expect(out.latencyMs).toBe(25)
     expect(out.modelId).toBe("jev-response")
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * toSystemOneQuestion — `instructions` is required on the wire
+ * ------------------------------------------------------------------ */
+
+describe("toSystemOneQuestion", () => {
+  test("keeps the criterion as instructions when given", () => {
+    const mapped = toSystemOneQuestion({
+      mode: "noul",
+      id: "q",
+      criterion: "Is the build red?",
+      criteria: { true: "red", false: "green" },
+    })
+    expect(mapped).toEqual({
+      type: "noul",
+      instructions: "Is the build red?",
+      criteria: { true: "red", false: "green" },
+    })
+  })
+
+  test("supplies a non-empty fallback when criterion is absent or blank (Liquid 422s otherwise)", () => {
+    const questions: DecideQuestion[] = [
+      { mode: "noul", id: "q", criteria: { true: "red", false: "green" } },
+      { mode: "choice", id: "c", criterion: "   ", options: { a: "A", b: null } },
+      { mode: "score", id: "s", levels: ["low", "high"] },
+    ]
+    for (const question of questions) {
+      const mapped = toSystemOneQuestion(question)
+      expect(typeof mapped.instructions).toBe("string")
+      expect((mapped.instructions ?? "").trim().length).toBeGreaterThan(0)
+      expect(mapped.instructions).toBe(fallbackInstructions(question))
+    }
+    expect(toSystemOneQuestion(questions[1]!).instructions).toContain('"a"')
+    expect(toSystemOneQuestion(questions[2]!).instructions).toContain("low")
   })
 })

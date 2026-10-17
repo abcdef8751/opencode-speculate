@@ -16,7 +16,7 @@ import { createHash } from "node:crypto"
 import { Plugin } from "@opencode/plugin"
 import {
   createDecideTool,
-  createJevJudge,
+  createSystemOneJudge,
   DECIDE_NAMESPACE,
   DECIDE_TOOL_NAME,
   type Json,
@@ -58,13 +58,13 @@ export default Plugin.define({
     }
 
     const judge = config.apiKey
-      ? createJevJudge({ apiKey: config.apiKey, baseURL: config.baseURL, model: config.model })
+      ? createSystemOneJudge({ apiKey: config.apiKey, baseURL: config.baseURL, model: config.model })
       : undefined
 
     if (judge === undefined) {
       console.error(
         `[decide] no API key (source: ${config.apiKeySource}) — decide tool not registered. ` +
-          `Set OPENCODE_API_KEY in .env (see .env.example).`,
+          `Set LIQUID_AI_API_KEY in .env (see .env.example).`,
       )
     }
 
@@ -107,7 +107,7 @@ export default Plugin.define({
 
       // --- the decide tool (contract §1) ---
       if (judge !== undefined) {
-        editor.namespace({ name: DECIDE_NAMESPACE, description: "TypeSafe/Jev fast structured decisions" })
+        editor.namespace({ name: DECIDE_NAMESPACE, description: "Liquid d1-ultra fast structured decisions" })
         editor.add(
           // Boundary cast: the tool surface is structurally identical; the host's generics are
           // stricter than the structural mirror in `decide/index.ts` (contract §2 pattern).

@@ -3,7 +3,7 @@
  *
  * Exercises the real `setup()` against a fake OpenCode V2 context: the tool transform, the
  * session hint, the durable decision log, and (through the stubbed network) the whole
- * `tools.typesafe.decide` path. Nothing here touches the real Jev endpoint.
+ * `tools.typesafe.decide` path. Nothing here touches the real judge endpoint.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
@@ -27,7 +27,7 @@ let configDir: string
 
 function fakeSystemOneResponse(answers: Record<string, unknown>): Response {
   return new Response(
-    JSON.stringify({ model: "jev-test", answers, usage: { input_tokens: 10, output_tokens: 5 } }),
+    JSON.stringify({ model: "d1-test", answers, usage: { input_tokens: 10, output_tokens: 5 } }),
     { status: 200, headers: { "content-type": "application/json" } },
   )
 }
@@ -89,10 +89,12 @@ beforeEach(() => {
   configDir = mkdtempSync(join(tmpdir(), "decide-cfg-"))
   process.env = {
     ...realEnv,
-    OPENCODE_API_KEY: "test-key",
+    LIQUID_AI_API_KEY: "test-key",
+    LIQUID_API_KEY: "",
+    OPENCODE_API_KEY: "",
     OPENCODE_CONFIG_DIR: configDir, // never read the user's real config dir
     OPENCODE_DECIDE_ALLOW_AUTH_JSON: "0",
-    OPENCODE_DECIDE_MODEL: "jev-test",
+    OPENCODE_DECIDE_MODEL: "d1-test",
     OPENCODE_DECIDE_ENV_FILE: join(configDir, "absent.env"),
     OPENCODE_DECIDE_BUILTINS_CODEMODE: "0",
   }
@@ -175,9 +177,9 @@ describe("plugin setup()", () => {
       { sessionID: "ses_test" },
     )) as { output: { id: string; value: unknown; confidence: number }[]; content: string }
 
-    // one Jev request for the whole batch
+    // one judge request for the whole batch
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.url).toBe("https://opencode.ai/inference/systemone/v1/systemone")
+    expect(calls[0]!.url).toBe("https://api.liquid.ai/decisions/v1/systemone")
 
     expect(result.output.map((v) => v.id)).toEqual(["passed", "culprit"])
     expect(result.output[0]!.value).toBe(true)
@@ -200,7 +202,7 @@ describe("plugin setup()", () => {
     }
     // §1 shape: { at, modelId, latencyMs, cached, questionIds, verdicts, usage }
     expect(typeof entry.at).toBe("number") // epoch ms, not an ISO string
-    expect(entry.modelId).toBe("jev-test")
+    expect(entry.modelId).toBe("d1-test")
     expect(typeof entry.latencyMs).toBe("number")
     expect(entry.cached).toBe(false)
     expect(entry.questionIds).toEqual(["passed", "culprit"])
@@ -302,7 +304,7 @@ describe("plugin setup()", () => {
     expect([...f.store.keys()].filter((k) => k.startsWith("decide/audit/"))).toHaveLength(1)
   })
 
-  test("a Jev failure surfaces as a thrown error, and still logs an error entry", async () => {
+  test("a judge failure surfaces as a thrown error, and still logs an error entry", async () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ error: { message: "nope" } }), { status: 401 })) as unknown as typeof fetch
 
@@ -328,7 +330,7 @@ describe("plugin setup()", () => {
       id: "call_2",
       input: {},
       status: "error",
-      error: { message: "Jev request failed: HTTP 401 Unauthorized" },
+      error: { message: "judge request failed: HTTP 401 Unauthorized" },
     })
     const entry = f.store.get(
       [...f.store.keys()].find((k) => k.startsWith("decide/audit/"))!,
@@ -354,6 +356,8 @@ describe("plugin setup()", () => {
   })
 
   test("registers nothing and injects no hint when there is no API key", async () => {
+    delete process.env.LIQUID_AI_API_KEY
+    delete process.env.LIQUID_API_KEY
     delete process.env.OPENCODE_API_KEY
     const f = fakeContext()
     await (plugin as { setup(ctx: unknown): Promise<unknown> }).setup(f.ctx)

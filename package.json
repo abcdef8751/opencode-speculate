@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Code Mode decide(): a state-centric fuzzy judge as an OpenCode V2 plugin tool (Jev/TypeSafe-backed), plus the headless measurement harness for the Code Mode cache-read hypothesis.",
+  "description": "Code Mode decide(): a state-centric fuzzy judge (Liquid AI d1-ultra) as an OpenCode V2 plugin tool",
   "exports": {
     ".": "./src/index.ts"
   },

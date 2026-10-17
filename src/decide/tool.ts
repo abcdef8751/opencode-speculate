@@ -60,7 +60,7 @@ export function parseDecideInput(input: unknown): DecideCall {
 }
 
 const DESCRIPTION =
-  "State-centric fuzzy judge (Jev via TypeSafe). Ask one or many atomic questions about a " +
+  "State-centric fuzzy judge (Liquid AI d1-ultra). Ask one or many atomic questions about a " +
   "single `state` and get per-question verdicts with normalized `confidence`, `value`, " +
   "`probabilities`/`p`, and an `escalate` flag. Batch related questions into one array call — " +
   "that is one judge request. Single question object in → single verdict object out; array in → " +

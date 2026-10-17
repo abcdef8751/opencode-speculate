@@ -143,6 +143,21 @@ describe("api key resolution order", () => {
     expect(config.apiKeySource).toBe("env")
   })
 
+  test("LIQUID_AI_API_KEY wins, then LIQUID_API_KEY, then the legacy names", () => {
+    expect(loadConfig(opts({ env: { LIQUID_AI_API_KEY: "sk-liquid" } })).apiKey).toBe("sk-liquid")
+    expect(
+      loadConfig(opts({ env: { LIQUID_API_KEY: "sk-liquid2", OPENCODE_API_KEY: "sk-old" } })).apiKey,
+    ).toBe("sk-liquid2")
+    expect(
+      loadConfig(
+        opts({ env: { LIQUID_AI_API_KEY: "sk-liquid1", LIQUID_API_KEY: "sk-liquid2" } }),
+      ).apiKey,
+    ).toBe("sk-liquid1")
+    const config = loadConfig(opts({ env: {} }))
+    expect(config.baseURL).toBe("https://api.liquid.ai/decisions")
+    expect(config.model).toBe("d1-ultra")
+  })
+
   test("TYPESAFE_API_KEY is the fallback env name; OPENCODE_API_KEY wins over it", () => {
     expect(loadConfig(opts({ env: { TYPESAFE_API_KEY: ENV_KEY } })).apiKeySource).toBe("env")
     const config = loadConfig(
@@ -162,21 +177,31 @@ describe("api key resolution order", () => {
     expect(config.envFile).toBe(envFile)
   })
 
-  test("<directory>/.env is read when no explicit env file exists", () => {
+  test("a project <directory>/.env alone is never read", () => {
     const project = tmpDir("project-dotenv")
-    const envFile = writeFile(join(project, ".env"), `OPENCODE_API_KEY=${FILE_KEY}\n`)
+    writeFile(join(project, ".env"), `OPENCODE_API_KEY=${FILE_KEY}\n`)
     const config = loadConfig(opts({ directory: project }))
-    expect(config.apiKey).toBe(FILE_KEY)
-    expect(config.apiKeySource).toBe("env-file")
-    expect(config.envFile).toBe(envFile)
+    expect(config.envFile).toBeUndefined()
+    expect(config.apiKey).toBeUndefined()
+    expect(config.apiKeySource).toBe("none")
   })
 
-  test("<configDir>/.env is read when the project has none", () => {
+  test("<configDir>/.env is the only implicit env file", () => {
     const configDir = tmpDir("config-dotenv")
     const envFile = writeFile(join(configDir, ".env"), `OPENCODE_API_KEY=${FILE_KEY}\n`)
     const config = loadConfig(opts({ configDir }))
     expect(config.apiKey).toBe(FILE_KEY)
     expect(config.apiKeySource).toBe("env-file")
+    expect(config.envFile).toBe(envFile)
+  })
+
+  test("a project <directory>/.env is ignored and cannot shadow <configDir>/.env", () => {
+    const project = tmpDir("shadow-project")
+    writeFile(join(project, ".env"), "OPENCODE_API_KEY=sk-project\n")
+    const configDir = tmpDir("shadow-config")
+    const envFile = writeFile(join(configDir, ".env"), `OPENCODE_API_KEY=${FILE_KEY}\n`)
+    const config = loadConfig(opts({ directory: project, configDir }))
+    expect(config.apiKey).toBe(FILE_KEY)
     expect(config.envFile).toBe(envFile)
   })
 
@@ -192,12 +217,12 @@ describe("api key resolution order", () => {
     expect(config.envFile).toBe(envFile)
   })
 
-  test("a configured-but-missing env file falls through to <directory>/.env", () => {
-    const project = tmpDir("fallthrough-project")
-    const envFile = writeFile(join(project, ".env"), `OPENCODE_API_KEY=${FILE_KEY}\n`)
+  test("a configured-but-missing env file falls through to <configDir>/.env", () => {
+    const configDir = tmpDir("fallthrough-config")
+    const envFile = writeFile(join(configDir, ".env"), `OPENCODE_API_KEY=${FILE_KEY}\n`)
     const config = loadConfig(
       opts({
-        directory: project,
+        configDir,
         env: { OPENCODE_DECIDE_ENV_FILE: join(TMP, "does-not-exist.env") },
       }),
     )

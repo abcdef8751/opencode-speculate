@@ -46,7 +46,7 @@ export type DecideQuestion = NoulQuestion | ChoiceQuestion | ScoreQuestion
  * ------------------------------------------------------------------ */
 
 export interface DecideCall {
-  /** Jev `state`: text or structured JSON. Keep it self-contained. */
+  /** Judge `state`: text or structured JSON. Keep it self-contained. */
   state: string | Json
   /** A single question object ⇒ a single verdict; an array ⇒ an array of verdicts. */
   questions: DecideQuestion | DecideQuestion[]
@@ -93,7 +93,7 @@ export interface StoragePort {
   set(key: string, value: Json): Promise<void>
 }
 
-/** One Jev question, in the shape the SDK/HTTP endpoint accepts. */
+/** One question, in the shape the systemone endpoint accepts. */
 export interface SystemOneQuestion {
   type: "noul" | "choice" | "score"
   instructions?: string
@@ -134,7 +134,7 @@ export interface SystemOneResult {
   usage?: SystemOneUsage
 }
 
-/** The backend seam. v1 = Jev; an LLM backend must satisfy the same interface. */
+/** The backend seam. Default = Liquid AI `d1-ultra`; any systemone-compatible backend fits. */
 export interface Judge {
   readonly modelId: string
   systemOne(

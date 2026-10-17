@@ -18,10 +18,16 @@ import { join, resolve } from "node:path"
 // Worker B owns `src/builtins.ts` (§2); the default built-in id list is defined there.
 import { BUILTIN_FILE_SHELL_IDS } from "./builtins.ts"
 
-/** Jev/TypeSafe systemone endpoint. */
-export const DEFAULT_BASE_URL = "https://opencode.ai/inference/systemone"
-/** Pinned model id; `jev-1.13-free` is free. */
-export const DEFAULT_MODEL = "jev-1.13-free"
+/** Liquid AI systemone endpoint (wire-compatible with the TypeSafe systemone shape). */
+export const DEFAULT_BASE_URL = "https://api.liquid.ai/decisions"
+/** Pinned model id. */
+export const DEFAULT_MODEL = "d1-ultra"
+
+/**
+ * API-key env names, in precedence order. Liquid first (the default backend), then the legacy
+ * OpenCode/TypeSafe names so an existing checkout keeps working if someone pins them.
+ */
+const KEY_ENV_NAMES = ["LIQUID_AI_API_KEY", "LIQUID_API_KEY", "OPENCODE_API_KEY", "TYPESAFE_API_KEY"] as const
 
 export type ApiKeySource = "env" | "env-file" | "auth-json" | "options" | "none"
 
@@ -50,7 +56,10 @@ export interface DecideConfigOverrides {
 export interface LoadConfigInput {
   /** Environment map. Defaults to `process.env`. */
   env?: Record<string, string | undefined>
-  /** Project directory, used for `<directory>/.env`. */
+  /**
+   * Accepted for the frozen `§3` signature, but no longer consulted: the env file is resolved
+   * from `configDir` alone (see `resolveEnvFile`).
+   */
   directory?: string
   /** Defaults to `OPENCODE_CONFIG_DIR`, then `~/.config/opencode`. */
   configDir?: string
@@ -170,18 +179,24 @@ function authJsonCandidates(configDir: string): string[] {
 }
 
 /**
- * The `.env` to read: `OPENCODE_DECIDE_ENV_FILE` → `<directory>/.env` → `<configDir>/.env`.
- * First existing candidate wins; a configured-but-missing path falls through.
+ * The `.env` to read: `OPENCODE_DECIDE_ENV_FILE` → `<configDir>/.env`
+ * (default `~/.config/opencode/.env`). First existing candidate wins; a configured-but-missing
+ * path falls through.
+ *
+ * The global config-dir file is deliberately the *only* implicit candidate. A project's own
+ * `<directory>/.env` is usually unrelated to this plugin (an app's secrets), and with
+ * "first existing wins" it silently shadowed the global switch: a session in any project that
+ * happens to ship a `.env` lost `OPENCODE_DECIDE_BUILTINS_CODEMODE=1`, so the built-ins stayed
+ * out of Code Mode (observed live 2026-10-16 in `/home/rp/chat`). A project that genuinely needs
+ * its own values points `OPENCODE_DECIDE_ENV_FILE` at them.
  */
 function resolveEnvFile(input: {
   env: Record<string, string | undefined>
-  directory: string | undefined
   configDir: string
 }): string | undefined {
   const explicit = nonEmpty(input.env["OPENCODE_DECIDE_ENV_FILE"])
   const candidates = [
     explicit === undefined ? undefined : resolve(explicit),
-    input.directory === undefined ? undefined : join(resolve(input.directory), ".env"),
     join(input.configDir, ".env"),
   ]
   for (const candidate of candidates) {
@@ -203,7 +218,7 @@ export function loadConfig(input: LoadConfigInput = {}): DecideConfig {
     nonEmpty(env["OPENCODE_CONFIG_DIR"]) ??
     join(homedir(), ".config", "opencode")
 
-  const envFile = resolveEnvFile({ env, directory: input.directory, configDir })
+  const envFile = resolveEnvFile({ env, configDir })
   const fileValues = envFile === undefined ? {} : readEnvFileValues(envFile)
 
   /** Explicit env var wins over the same key in the `.env` file; empty counts as absent. */
@@ -212,10 +227,15 @@ export function loadConfig(input: LoadConfigInput = {}): DecideConfig {
 
   // 1. explicit override → 2. process env → 3. env file → 4. auth.json → none
   const overrideKey = nonEmpty(overrides.apiKey)
-  const envKey =
-    nonEmpty(env["OPENCODE_API_KEY"]) ?? nonEmpty(env["TYPESAFE_API_KEY"])
-  const fileKey =
-    nonEmpty(fileValues["OPENCODE_API_KEY"]) ?? nonEmpty(fileValues["TYPESAFE_API_KEY"])
+  const firstPresent = (source: (name: string) => string | undefined): string | undefined => {
+    for (const name of KEY_ENV_NAMES) {
+      const value = source(name)
+      if (value !== undefined) return value
+    }
+    return undefined
+  }
+  const envKey = firstPresent((name) => nonEmpty(env[name]))
+  const fileKey = firstPresent((name) => nonEmpty(fileValues[name]))
   const allowAuthJson =
     (parseBoolFlag(effective("OPENCODE_DECIDE_ALLOW_AUTH_JSON")) ?? true) === true
 

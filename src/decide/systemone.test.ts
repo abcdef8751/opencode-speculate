@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
-  createJevJudge,
-  DEFAULT_JEV_BASE_URL,
-  DEFAULT_JEV_MODEL,
-  JEV_USER_AGENT,
-} from "./jev"
+  createSystemOneJudge,
+  DEFAULT_SYSTEMONE_BASE_URL,
+  DEFAULT_SYSTEMONE_MODEL,
+  SYSTEMONE_USER_AGENT,
+} from "./systemone"
 
 /** A real `Response` is fine now: our client reads the body exactly once. No network. */
 function jsonResponse(body: unknown, status = 200, statusText = ""): Response {
@@ -33,8 +33,8 @@ const question = {
   q: { type: "noul" as const, instructions: "is it?", criteria: { true: "y", false: "n" } },
 }
 
-describe("createJevJudge", () => {
-  test("posts the OpenCode Console endpoint with the contract headers/body and maps the response", async () => {
+describe("createSystemOneJudge", () => {
+  test("posts the Liquid endpoint with the contract headers/body and maps the response", async () => {
     const { fetch, calls } = capturingFetch(() =>
       jsonResponse({
         model: "jev-1.13-free",
@@ -42,23 +42,23 @@ describe("createJevJudge", () => {
         usage: { input_tokens: 409, output_tokens: 73 },
       }),
     )
-    const judge = createJevJudge({ apiKey: "test-key", fetch })
+    const judge = createSystemOneJudge({ apiKey: "test-key", fetch })
 
     const result = await judge.systemOne({ state: "hello", questions: question })
 
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.url).toBe(`${DEFAULT_JEV_BASE_URL}/v1/systemone`)
+    expect(calls[0]!.url).toBe(`${DEFAULT_SYSTEMONE_BASE_URL}/v1/systemone`)
     expect(calls[0]!.init.method).toBe("POST")
     const headers = new Headers(calls[0]!.init.headers)
     expect(headers.get("authorization")).toBe("Bearer test-key")
     expect(headers.get("content-type")).toBe("application/json")
     expect(headers.get("accept")).toBe("application/json")
     // A normal UA: Cloudflare 1010-blocks unknown agents on this host.
-    expect(headers.get("user-agent")).toBe(JEV_USER_AGENT)
+    expect(headers.get("user-agent")).toBe(SYSTEMONE_USER_AGENT)
 
     const body = JSON.parse(String(calls[0]!.init.body)) as Record<string, unknown>
     expect(body.state).toBe("hello")
-    expect(body.model).toBe(DEFAULT_JEV_MODEL)
+    expect(body.model).toBe(DEFAULT_SYSTEMONE_MODEL)
     expect(body.questions).toEqual(question)
 
     expect(result.model).toBe("jev-1.13-free")
@@ -70,7 +70,7 @@ describe("createJevJudge", () => {
     const { fetch, calls } = capturingFetch(() =>
       jsonResponse({ model: "custom", answers: {} }),
     )
-    const judge = createJevJudge({
+    const judge = createSystemOneJudge({
       apiKey: "k",
       baseURL: "https://example.test/inference/systemone/",
       model: "jev-pinned",
@@ -88,20 +88,20 @@ describe("createJevJudge", () => {
     const { fetch } = capturingFetch(() =>
       jsonResponse({ error: { message: "bad key" } }, 401, "Unauthorized"),
     )
-    const judge = createJevJudge({ apiKey: "k", fetch, timeoutMs: 200 })
+    const judge = createSystemOneJudge({ apiKey: "k", fetch, timeoutMs: 200 })
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/HTTP 401/)
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/bad key/)
   })
 
   test("a non-2xx 400 also surfaces the status", async () => {
     const { fetch } = capturingFetch(() => jsonResponse({ message: "nope" }, 400))
-    const judge = createJevJudge({ apiKey: "k", fetch })
+    const judge = createSystemOneJudge({ apiKey: "k", fetch })
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/HTTP 400/)
   })
 
   test("an unusable response throws", async () => {
     const { fetch } = capturingFetch(() => jsonResponse({ model: "x", answers: null }))
-    const judge = createJevJudge({ apiKey: "k", fetch })
+    const judge = createSystemOneJudge({ apiKey: "k", fetch })
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(
       /unusable response/,
     )
@@ -111,7 +111,7 @@ describe("createJevJudge", () => {
     const { fetch } = capturingFetch(
       () => new Response("<html>oops</html>", { status: 200, headers: { "content-type": "text/html" } }),
     )
-    const judge = createJevJudge({ apiKey: "k", fetch })
+    const judge = createSystemOneJudge({ apiKey: "k", fetch })
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(/non-JSON/)
   })
 
@@ -120,7 +120,7 @@ describe("createJevJudge", () => {
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => reject(new Error("aborted")))
       })) as unknown as typeof fetch
-    const judge = createJevJudge({ apiKey: "k", fetch: hangingFetch, timeoutMs: 5 })
+    const judge = createSystemOneJudge({ apiKey: "k", fetch: hangingFetch, timeoutMs: 5 })
     await expect(judge.systemOne({ state: "s", questions: question })).rejects.toThrow(
       /timeout after 5ms/,
     )
@@ -131,7 +131,7 @@ describe("createJevJudge", () => {
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => reject(new Error("aborted")))
       })) as unknown as typeof fetch
-    const judge = createJevJudge({ apiKey: "k", fetch: hangingFetch, timeoutMs: 10_000 })
+    const judge = createSystemOneJudge({ apiKey: "k", fetch: hangingFetch, timeoutMs: 10_000 })
     const controller = new AbortController()
     const pending = judge.systemOne({ state: "s", questions: question }, { signal: controller.signal })
     controller.abort()
@@ -139,6 +139,6 @@ describe("createJevJudge", () => {
   })
 
   test("requires an apiKey", () => {
-    expect(() => createJevJudge({ apiKey: "" })).toThrow(/apiKey/)
+    expect(() => createSystemOneJudge({ apiKey: "" })).toThrow(/apiKey/)
   })
 })

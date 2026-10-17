@@ -36,14 +36,29 @@ bun run harness --tasks <id> --arms A,B,C --runs 1 --driver mock
 
 ## Backend
 
-Jev is reached through the OpenCode Console systemone endpoint
-(`https://opencode.ai/inference/systemone/v1/systemone`, model `jev-1.13-free`) via a small,
-dependency-free `fetch` client (`src/decide/jev.ts`). `@typesafe-ai/sdk` is deliberately **not**
-used — see the measured finding below. The key is resolved from `OPENCODE_API_KEY` (env or
-`.env`) — see `.env.example`. Keys are never logged.
+The judge is **Liquid AI `d1-ultra`**, reached through
+`https://api.liquid.ai/decisions/v1/systemone` via a small, dependency-free `fetch` client
+(`src/decide/systemone.ts`; `src/decide/jev.ts` is now a deprecated alias shim). The wire shape is
+the systemone shape the engine already spoke, so the swap was a base-URL + key + model change, not
+an engine change. `@typesafe-ai/sdk` is deliberately **not** used — see the measured finding below.
+
+The key is resolved from `LIQUID_AI_API_KEY` (env or `.env`; `LIQUID_API_KEY`,
+`OPENCODE_API_KEY` and `TYPESAFE_API_KEY` are accepted as legacy fallbacks) — see
+`.env.example`. Keys are never logged.
+
+Two wire-level facts measured live 2026-10-17 and encoded in `toSystemOneQuestion`:
+
+- `questions.<id>.instructions` is **required and non-empty**; `d1-ultra` answers
+  `422 …instructions` otherwise. The DSL's `criterion?` stays optional, so a question without one
+  gets a criteria-derived fallback instruction.
+- `choice` criteria may carry `null` descriptions, `score` criteria is a string array, and an
+  array of questions is still one request.
 
 ## Key findings that this repo builds on
 
+- **The OpenCode Console Jev endpoint stopped working for plugins** (measured 2026-10-17): every
+  request returns `403 FreeTierError — "OpenCode's free tier can only be used from within
+  OpenCode"`, whatever the User-Agent. That is why the backend moved to Liquid `d1-ultra`.
 - Plugin tools land in Code Mode, not the native tool list — the vendored ensemble plugin hit this
   live (`~/.config/opencode/plugins/opencode-ensemble/src/v2-setup.ts`).
 - Built-ins ship `options: { codemode: false }`, so they are *not* in the sandbox by default;

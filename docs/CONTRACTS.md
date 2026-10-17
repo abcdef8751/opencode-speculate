@@ -28,6 +28,27 @@ Runtime facts verified on this machine (2026-10-16, `opencode v2.0.30`):
 - The SDK posts to `baseURL + "/v1/systemone"` and sends `Authorization: Bearer <apiKey>`.
   Therefore `baseURL = "https://opencode.ai/inference/systemone"`.
 
+### ⚠ AMENDMENT 2026-10-17 — the backend is Liquid AI `d1-ultra`
+
+The OpenCode Console endpoint above **is no longer usable from a plugin**: every request returns
+`403 FreeTierError — "OpenCode's free tier can only be used from within OpenCode"`, with the
+`opencode` auth.json key, an `opencode/2.0.30` UA and a `bun/1.3.0` UA alike (measured live).
+So the default backend is now **Liquid AI `d1-ultra`**:
+
+- `baseURL = "https://api.liquid.ai/decisions"` (the client still posts `${baseURL}/v1/systemone`,
+  i.e. `https://api.liquid.ai/decisions/v1/systemone`), `model = "d1-ultra"`.
+- Key: `LIQUID_AI_API_KEY`, then `LIQUID_API_KEY`, then the legacy `OPENCODE_API_KEY` /
+  `TYPESAFE_API_KEY`, then `auth.json`. Resolution order and "empty counts as absent" are
+  unchanged (§3).
+- The wire shape is unchanged — the same `{ model, state, questions }` in and
+  `{ model, answers, usage }` out — so nothing in §1's types changes.
+- Two measured constraints on the wire shape, encoded in `toSystemOneQuestion`:
+  `instructions` is **required and non-empty** (`422 … instructions` otherwise), so a question
+  without `criterion` gets a criteria-derived fallback; `choice` criteria may carry `null`
+  descriptions; `score` criteria is a string array.
+- Sameness of names is kept for compatibility: `createJevJudge` / `DEFAULT_JEV_*` still exist as
+  aliases of `createSystemOneJudge` / `DEFAULT_SYSTEMONE_*` in `src/decide/systemone.ts`.
+
 ### ⚠ `@typesafe-ai/sdk` is NOT usable in the plugin path (measured 2026-10-16)
 
 Two independent, reproduced problems — so **`createJevJudge` must not use the SDK**:
@@ -220,7 +241,7 @@ export interface SystemOneResult {
   usage?: { input_tokens: number | null; output_tokens: number | null }
 }
 
-/** The backend seam. v1 = Jev; an LLM backend must satisfy the same interface. */
+/** The backend seam. Default = Liquid AI `d1-ultra` (see the 2026-10-17 amendment). */
 export interface Judge {
   readonly modelId: string
   systemOne(req: SystemOneRequest, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SystemOneResult>

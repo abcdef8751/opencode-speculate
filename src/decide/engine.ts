@@ -264,30 +264,52 @@ export function normalizeQuestions(
   return out
 }
 
-/** Map a DSL question to the SDK/HTTP `{ type, instructions, criteria }` shape. */
+/**
+ * `instructions` is optional in the DSL (`criterion?`) but **required and non-empty** on the
+ * wire: Liquid `d1-ultra` answers `422 questions.<id>.instructions` for a missing or blank one
+ * (measured live 2026-10-17). So a question without a criterion gets a generic instruction built
+ * from its own criteria — the semantics already live there.
+ */
+export function fallbackInstructions(question: DecideQuestion): string {
+  switch (question.mode) {
+    case "noul":
+      return `Does "${question.criteria.true}" apply rather than "${question.criteria.false}"?`
+    case "choice": {
+      const labels = Object.keys(question.options)
+      return `Which of these applies: ${labels.map((label) => `"${label}"`).join(", ")}?`
+    }
+    case "score":
+      return `Score the state against the rubric from "${question.levels[0] ?? "0"}" to "${question.levels[question.levels.length - 1] ?? String(question.levels.length - 1)}".`
+  }
+}
+
+/** The non-empty instruction to send: the criterion when given, else a criteria-derived fallback. */
+function instructionsFor(question: DecideQuestion): string {
+  const criterion = question.criterion?.trim()
+  return criterion !== undefined && criterion !== "" ? criterion : fallbackInstructions(question)
+}
+
+/** Map a DSL question to the systemone `{ type, instructions, criteria }` shape. */
 export function toSystemOneQuestion(question: DecideQuestion): SystemOneQuestion {
   switch (question.mode) {
-    case "noul": {
-      const mapped: SystemOneQuestion = {
+    case "noul":
+      return {
         type: "noul",
+        instructions: instructionsFor(question),
         criteria: { true: question.criteria.true, false: question.criteria.false },
       }
-      if (question.criterion !== undefined) mapped.instructions = question.criterion
-      return mapped
-    }
-    case "choice": {
-      const mapped: SystemOneQuestion = {
+    case "choice":
+      return {
         type: "choice",
+        instructions: instructionsFor(question),
         criteria: { ...question.options },
       }
-      if (question.criterion !== undefined) mapped.instructions = question.criterion
-      return mapped
-    }
-    case "score": {
-      const mapped: SystemOneQuestion = { type: "score", criteria: [...question.levels] }
-      if (question.criterion !== undefined) mapped.instructions = question.criterion
-      return mapped
-    }
+    case "score":
+      return {
+        type: "score",
+        instructions: instructionsFor(question),
+        criteria: [...question.levels],
+      }
   }
 }
 
@@ -328,7 +350,7 @@ export function verdictFacts(
     const p = answer?.noul
     if (typeof p === "number" && Number.isFinite(p)) {
       return {
-        // Jev returns P(true) only; the boolean decision rule is the natural p >= 0.5.
+        // The judge returns P(true) only; the boolean decision rule is the natural p >= 0.5.
         value: p >= 0.5,
         p: clamp01(p),
         confidence: normalizeNoulConfidence(p),
