@@ -40,7 +40,7 @@ export interface TaskDef {
   prompt: string
   /** Prompt for arms B and C (write one Code Mode script). */
   scriptPrompt: string
-  /** For arm C: extra instruction demanding the `escalate` / `break` handler. */
+  /** For arm C: extra instruction demanding the `escalate` handler (`break` in a loop, `return` at top level). */
   escalationPrompt?: string
   /** Tools this task needs; a subset of ToolBox names. Defaults to all sandbox tools. */
   tools?: readonly string[]

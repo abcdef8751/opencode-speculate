@@ -72,8 +72,9 @@ export const logTriage: TaskWithJudgeAnswers = {
     "  * `const d = verdicts[0];` — the single verdict the handler below inspects.",
     "  * call it at least once while iterating the logs,",
     "  * keep a `done` ledger of what you have processed,",
-    "  * and include the escalation handler verbatim in shape: `if (d.escalate) { console.log(\"[escalate]\", d.reason); break }`,",
-    "    inside the same loop, so the program stops early when the judge is unsure.",
+    "  * and include the escalation handler in shape: `if (d.escalate) { console.log(\"[escalate]\", d.reason); break }`,",
+    "    inside the same loop, so the program stops scanning early when the judge is unsure — then still finish and write the artefact.",
+    "    The session hint shows the top-level form `return { stop: true, reason: d.reason }`: at top level there is no loop to `break`, and here an early `return` would skip the write.",
     "The program must still write the correct `triage.json` for the corpus.",
   ].join("\n"),
   async verify(dir: string): Promise<TaskVerifyResult> {

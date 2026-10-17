@@ -410,13 +410,16 @@ describe("TASKS catalog", () => {
     expect(withEscalation.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("every escalationPrompt mentions decide and the escalate/break handler", () => {
+  test("every escalationPrompt mentions decide and both escalation-handler forms", () => {
     for (const task of TASKS) {
       const prompt = task.escalationPrompt;
       if (prompt === undefined) continue;
       expect(prompt).toContain("tools.typesafe.decide");
       expect(prompt).toContain("escalate");
+      // inside the task's own loop, `break` stops the scan so the artefact still gets written…
       expect(prompt).toContain("break");
+      // …and the top-level form the session hint teaches is named as well
+      expect(prompt).toContain("return { stop: true, reason: d.reason }");
     }
   });
 

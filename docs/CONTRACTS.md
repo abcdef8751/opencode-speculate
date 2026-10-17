@@ -544,8 +544,9 @@ The three arms (plan §Measurement harness):
 - **B — script, no `decide`.** One model call producing a Code Mode program; executed by
   `CodeMode.make({ tools }).execute(code)` over the *same* `ToolBox`.
 - **C — script + `decide`.** Same, with `tools.typesafe.decide` added (real `Judge` when a key is
-  present, otherwise the D2 `fakeJudge`), and the task's `scriptPrompt` demanding the
-  `escalate`/`break` handler.
+  present, otherwise the D2 `fakeJudge`), and the task's `escalationPrompt` demanding the
+  `escalate` handler — `break` inside the script's own loop (so the artefact still gets written),
+  `return { stop: true, reason: d.reason }` at top level, which is the form the session hint shows.
 
 Both script arms register the decide tool as namespace `typesafe`, so the script path is
 `tools.typesafe.decide`. D1's sandbox must also expose `search`-equivalent discoverability only if

@@ -455,6 +455,11 @@ export interface DecideLoopOptions {
 /**
  * The `decide` + `break` handler demanded by the arm-C prompt, in the plan's shape.
  *
+ * `break` (not the hint's top-level `return { stop: true }`) is deliberate here: the canned
+ * programs run the decide loop *before* their final `return` but *after* writing the artefact, so
+ * an early `return` would still leave the file written — while breaking only stops the scan and
+ * keeps the program's own completion path intact. The prompt now names both forms.
+ *
  * The questions payload is the §1 shape: an ARRAY of question objects. (An id-keyed map is the
  * *wire* shape produced inside the tool — passing it here makes `mode`/`id` undefined and worker
  * A's validator throws.) Because an array input yields `DecideVerdict[]` (§1), the program reads
